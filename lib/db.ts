@@ -115,26 +115,36 @@ export function purgeWebsiteLeads(): number {
   return removed;
 }
 
-// Leads that have coordinates but no locality/county yet — candidates for
-// reverse-geocode enrichment.
+// Leads still missing locality/county that we haven't tried to enrich yet and
+// that we CAN enrich (we have either coordinates or an address to geocode).
+function canEnrich(l: StoredLead): boolean {
+  const missing = !l.locality || !l.county;
+  const hasGeoSource = (typeof l.lat === "number" && typeof l.lng === "number") || !!l.address;
+  return missing && !l.geoTried && hasGeoSource;
+}
+
 export function getLeadsMissingGeo(limit: number): StoredLead[] {
-  return Object.values(readDb().leads)
-    .filter((l) => typeof l.lat === "number" && typeof l.lng === "number" && (!l.locality || !l.county))
-    .slice(0, limit);
+  return Object.values(readDb().leads).filter(canEnrich).slice(0, limit);
 }
 
 export function countLeadsMissingGeo(): number {
-  return Object.values(readDb().leads).filter(
-    (l) => typeof l.lat === "number" && typeof l.lng === "number" && (!l.locality || !l.county)
-  ).length;
+  return Object.values(readDb().leads).filter(canEnrich).length;
 }
 
-export function setLeadGeo(id: string, locality: string, county: string): void {
+// Writes whatever the geocoder found and marks the lead as tried, so it won't
+// be flagged/retried even if nothing usable came back.
+export function setLeadGeo(
+  id: string,
+  patch: { locality?: string; county?: string; lat?: number; lng?: number }
+): void {
   const db = readDb();
   const lead = db.leads[id];
   if (!lead) return;
-  if (locality) lead.locality = locality;
-  if (county) lead.county = county;
+  if (patch.locality) lead.locality = patch.locality;
+  if (patch.county) lead.county = patch.county;
+  if (typeof patch.lat === "number") lead.lat = patch.lat;
+  if (typeof patch.lng === "number") lead.lng = patch.lng;
+  lead.geoTried = true;
   db.leads[id] = lead;
   writeDb(db);
 }

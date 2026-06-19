@@ -36,6 +36,7 @@ export type StoredLead = Lead & {
   savedAt: string;
   contactedAt?: string;
   firstQuery: string;
+  geoTried?: boolean; // we've attempted to fill locality/county (avoid retrying forever)
 };
 
 // A search result handed to the UI: the fresh data, plus whether we've seen it
