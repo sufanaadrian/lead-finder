@@ -1,6 +1,9 @@
-// Calls the Google Places API (New) Text Search and returns a normalized,
-// de-duplicated list of places. Filtering (no-website / has-reviews / has-photos)
-// is done on the client so toggles update instantly without re-querying.
+// Calls the Google Places API (New) Text Search, records how many requests it
+// used (for quota tracking), saves the results to the local DB (for dedup), and
+// returns each result annotated with whether we've seen it before.
+
+import { recordUsage, upsertLeads, getExistingStatuses } from "@/lib/db";
+import type { Lead, SearchResult } from "@/lib/types";
 
 const SEARCH_URL = "https://places.googleapis.com/v1/places:searchText";
 
@@ -33,19 +36,6 @@ type GooglePlace = {
   googleMapsUri?: string;
 };
 
-export type Lead = {
-  id: string;
-  name: string;
-  address: string;
-  phone: string;
-  whatsapp: string; // digits only, "" if no phone
-  website: string; // "" if none
-  rating: number;
-  reviewCount: number;
-  photoCount: number;
-  mapsUri: string;
-};
-
 function normalize(p: GooglePlace): Lead {
   const intl = p.internationalPhoneNumber || "";
   return {
@@ -71,7 +61,7 @@ export async function POST(req: Request) {
     );
   }
 
-  let body: { term?: string; location?: string; maxPages?: number };
+  let body: { term?: string; location?: string; pages?: number };
   try {
     body = await req.json();
   } catch {
@@ -88,12 +78,13 @@ export async function POST(req: Request) {
   }
 
   const textQuery = `${term} ${location}`;
-  // Each page is up to 20 results; Google caps Text Search at 60 (3 pages).
-  const maxPages = Math.min(Math.max(body.maxPages ?? 3, 1), 3);
+  // Each page is up to 20 results & costs 1 request; Google caps Text Search at 60.
+  const maxPages = Math.min(Math.max(body.pages ?? 3, 1), 3);
 
-  const all: Lead[] = [];
+  const found: Lead[] = [];
   const seen = new Set<string>();
   let pageToken: string | undefined;
+  let requestsUsed = 0;
 
   try {
     for (let page = 0; page < maxPages; page++) {
@@ -111,9 +102,11 @@ export async function POST(req: Request) {
           ...(pageToken ? { pageToken } : {}),
         }),
       });
+      requestsUsed++;
 
       if (!res.ok) {
         const detail = await res.text();
+        if (requestsUsed > 0) recordUsage(requestsUsed);
         return Response.json(
           { error: `Eroare de la Google (${res.status}). ${detail.slice(0, 300)}` },
           { status: 502 }
@@ -125,7 +118,7 @@ export async function POST(req: Request) {
         const lead = normalize(p);
         if (seen.has(lead.id)) continue;
         seen.add(lead.id);
-        all.push(lead);
+        found.push(lead);
       }
 
       pageToken = data.nextPageToken;
@@ -134,8 +127,25 @@ export async function POST(req: Request) {
       await new Promise((r) => setTimeout(r, 1500));
     }
   } catch (err) {
+    if (requestsUsed > 0) recordUsage(requestsUsed);
     return Response.json({ error: `Eroare de rețea: ${String(err)}` }, { status: 502 });
   }
 
-  return Response.json({ leads: all, query: textQuery });
+  // Snapshot which results we already had BEFORE saving this batch.
+  const existing = getExistingStatuses(found.map((l) => l.id));
+  const usageToday = recordUsage(requestsUsed);
+  upsertLeads(found, textQuery);
+
+  const results: SearchResult[] = found.map((l) => ({
+    ...l,
+    known: l.id in existing,
+    status: existing[l.id] ?? "new",
+  }));
+
+  return Response.json({
+    results,
+    query: textQuery,
+    requestsUsed,
+    usageToday,
+  });
 }

@@ -8,9 +8,24 @@ Folosește **Google Places API (New)**, aceeași sursă de date pe care o vezi �
 
 - Caută după tip (pensiune, cabană, hotel…) + zonă (oraș / județ / regiune)
 - Afișează pentru fiecare loc: nume, telefon, adresă, nr. recenzii, nr. poze, dacă are website, link Google Maps
-- Buton **WhatsApp** direct pentru fiecare lead
-- Filtre (toggle): doar fără website · doar cu telefon · doar cu recenzii · doar cu poze
+- Buton **WhatsApp** cu mesaj pre-completat (editabil, cu `{nume}` înlocuit automat) — la apăsare marchează lead-ul „Contactat"
+- **Bază de date locală** care reține tot ce ai găsit (`data/db.json`) — nu mai scrii pe nimeni de două ori
+- Status pentru fiecare lead: Nou / Contactat / Client / Ignorat, + notițe
+- Filtre (toggle): doar fără website · doar cu telefon · doar cu recenzii · doar cu poze · ascunde cele deja găsite
 - **Export CSV** pentru lista filtrată
+- **Contor de cereri** către Google, afișat în colț, ca să-ți vezi consumul
+
+## Cum NU depășești cota gratuită
+
+Două niveluri de protecție:
+
+1. **Limita reală — în Google Cloud (obligatoriu de setat o dată):**
+   - **APIs & Services → Places API (New) → Quotas** — pune o limită zilnică de cereri (ex: 100/zi). Peste ea, Google refuză cererile în loc să te taxeze.
+   - **Billing → Budgets & alerts** — creează un buget (ex: 10$) cu alertă pe email. Te anunță înainte să cheltui.
+2. **În aplicație:**
+   - Contorul „cereri azi" din colț (devine galben peste 80).
+   - Selector adâncime căutare: **Rapid (20) = 1 cerere**, Mediu (40) = 2, Complet (60) = 3.
+   - Baza de date evită re-căutările — folosește „Ascunde cele deja găsite".
 
 ## Setup (o singură dată)
 
