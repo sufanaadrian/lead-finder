@@ -10,6 +10,7 @@ export type Lead = {
   rating: number;
   reviewCount: number;
   photoCount: number;
+  photos?: string[]; // Google photo resource names ("places/<id>/photos/<ref>")
   mapsUri: string;
   lat?: number;
   lng?: number;

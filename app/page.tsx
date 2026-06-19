@@ -1,8 +1,15 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import dynamic from "next/dynamic";
 import type { LeadStatus, SearchResult, StoredLead } from "@/lib/types";
 import { STATUS_LABELS } from "@/lib/types";
+
+// Leaflet touches `window` on import, so load the map only in the browser.
+const AreaPicker = dynamic(() => import("./AreaPicker"), {
+  ssr: false,
+  loading: () => <div className="w-full h-80 rounded-lg bg-white/[0.03] border border-white/10 grid place-items-center text-white/30 text-sm">Se încarcă harta…</div>,
+});
 
 const TYPE_OPTIONS = [
   "pensiune",
@@ -116,6 +123,9 @@ function SearchTab({ template, onUsage }: { template: string; onUsage: (n: numbe
   const [types, setTypes] = useState<string[]>(["pensiune"]);
   const [customType, setCustomType] = useState("");
   const [location, setLocation] = useState("");
+  const [areaMode, setAreaMode] = useState<"text" | "map">("text");
+  const [center, setCenter] = useState<{ lat: number; lng: number } | null>(null);
+  const [radiusKm, setRadiusKm] = useState(10);
   const [pages, setPages] = useState(3);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -145,8 +155,15 @@ function SearchTab({ template, onUsage }: { template: string; onUsage: (n: numbe
 
   const estRequests = types.length * pages;
 
+  const useMap = areaMode === "map";
+  const canSearch = types.length > 0 && (useMap ? !!center : location.trim().length > 0);
+
   async function search(e: React.FormEvent) {
     e.preventDefault();
+    if (!canSearch) {
+      setError(useMap ? "Apasă pe hartă pentru a alege o zonă." : "Scrie o zonă.");
+      return;
+    }
     setError("");
     setWarning("");
     setLoading(true);
@@ -156,7 +173,12 @@ function SearchTab({ template, onUsage }: { template: string; onUsage: (n: numbe
       const res = await fetch("/api/search", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ terms: types, location, pages }),
+        body: JSON.stringify({
+          terms: types,
+          location: useMap ? "" : location,
+          area: useMap && center ? { lat: center.lat, lng: center.lng, radiusKm } : undefined,
+          pages,
+        }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -227,7 +249,7 @@ function SearchTab({ template, onUsage }: { template: string; onUsage: (n: numbe
           </div>
         </Field>
 
-        <div className="grid sm:grid-cols-[1fr_1.3fr_auto] gap-3 mt-4">
+        <div className="mt-3">
           <Field label="Adaugă tip propriu">
             <input
               value={customType}
@@ -238,30 +260,71 @@ function SearchTab({ template, onUsage }: { template: string; onUsage: (n: numbe
                   addCustomType();
                 }
               }}
-              placeholder="ex: agroturism"
-              className="w-full bg-black/30 border border-white/10 rounded-lg px-3 py-2.5 outline-none focus:border-white/30"
+              placeholder="ex: agroturism (apasă Enter)"
+              className="w-full sm:max-w-xs bg-black/30 border border-white/10 rounded-lg px-3 py-2.5 outline-none focus:border-white/30"
             />
           </Field>
-          <Field label="Zona (oraș, județ, regiune)">
+        </div>
+
+        {/* Zone: type it, or pick an area on the map */}
+        <div className="mt-4">
+          <div className="flex items-center gap-2 mb-2">
+            <span className="text-xs text-white/40">Zona:</span>
+            <div className="flex gap-1 bg-black/30 border border-white/10 rounded-lg p-0.5">
+              <button
+                type="button"
+                onClick={() => setAreaMode("text")}
+                className={`text-xs px-3 py-1 rounded-md transition-colors ${areaMode === "text" ? "bg-white/15 text-white" : "text-white/45 hover:text-white/70"}`}
+              >
+                Scrie zona
+              </button>
+              <button
+                type="button"
+                onClick={() => setAreaMode("map")}
+                className={`text-xs px-3 py-1 rounded-md transition-colors ${areaMode === "map" ? "bg-white/15 text-white" : "text-white/45 hover:text-white/70"}`}
+              >
+                Alege pe hartă
+              </button>
+            </div>
+          </div>
+
+          {areaMode === "text" ? (
             <input
               value={location}
               onChange={(e) => setLocation(e.target.value)}
               placeholder="Brașov / Valea Prahovei / Maramureș"
               className="w-full bg-black/30 border border-white/10 rounded-lg px-3 py-2.5 outline-none focus:border-white/30"
             />
-          </Field>
-          <div className="flex items-end">
-            <button
-              type="submit"
-              disabled={loading || types.length === 0}
-              className="w-full sm:w-auto h-[46px] px-6 rounded-lg bg-emerald-500 text-black font-semibold hover:bg-emerald-400 disabled:opacity-50 transition-colors"
-            >
-              {loading ? "Caut…" : "Caută"}
-            </button>
-          </div>
+          ) : (
+            <div>
+              <AreaPicker center={center} radiusKm={radiusKm} onPick={(lat, lng) => setCenter({ lat, lng })} />
+              <div className="flex items-center gap-3 mt-2 flex-wrap">
+                <label className="text-xs text-white/40">Rază: <strong className="text-white/70">{radiusKm} km</strong></label>
+                <input
+                  type="range"
+                  min={1}
+                  max={40}
+                  value={radiusKm}
+                  onChange={(e) => setRadiusKm(Number(e.target.value))}
+                  className="flex-1 min-w-40 accent-emerald-400"
+                />
+                <span className="text-xs text-white/35">
+                  {center ? `Centru: ${center.lat.toFixed(3)}, ${center.lng.toFixed(3)}` : "Apasă pe hartă pentru a alege centrul"}
+                </span>
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="flex flex-wrap items-center gap-2 mt-4">
+          <button
+            type="submit"
+            disabled={loading || !canSearch}
+            className="h-[42px] px-6 rounded-lg bg-emerald-500 text-black font-semibold hover:bg-emerald-400 disabled:opacity-40 transition-colors"
+          >
+            {loading ? "Caut…" : "Caută"}
+          </button>
+          <span className="text-xs text-white/35 ml-2 mr-1">Adâncime:</span>
           <span className="text-xs text-white/35 mr-1">Adâncime:</span>
           {DEPTHS.map((d) => (
             <button
@@ -282,12 +345,15 @@ function SearchTab({ template, onUsage }: { template: string; onUsage: (n: numbe
         </div>
       </form>
 
-      <div className="flex flex-wrap gap-2.5 mb-5">
-        <Toggle on={hideKnown} onClick={() => setHideKnown((v) => !v)} label="Ascunde cele deja găsite" />
-        <Toggle on={onlyNoWebsite} onClick={() => setOnlyNoWebsite((v) => !v)} label="Doar fără website" />
-        <Toggle on={requirePhone} onClick={() => setRequirePhone((v) => !v)} label="Doar cu telefon" />
-        <Toggle on={requireReviews} onClick={() => setRequireReviews((v) => !v)} label="Doar cu recenzii" />
-        <Toggle on={requirePhotos} onClick={() => setRequirePhotos((v) => !v)} label="Doar cu poze" />
+      <div className="mb-5">
+        <p className="text-xs text-white/35 mb-2">Filtre (verde = activ):</p>
+        <div className="flex flex-wrap gap-2.5">
+          <Toggle on={hideKnown} onClick={() => setHideKnown((v) => !v)} label="Ascunde cele deja găsite" />
+          <Toggle on={onlyNoWebsite} onClick={() => setOnlyNoWebsite((v) => !v)} label="Doar fără website" />
+          <Toggle on={requirePhone} onClick={() => setRequirePhone((v) => !v)} label="Doar cu telefon" />
+          <Toggle on={requireReviews} onClick={() => setRequireReviews((v) => !v)} label="Doar cu recenzii" />
+          <Toggle on={requirePhotos} onClick={() => setRequirePhotos((v) => !v)} label="Doar cu poze" />
+        </div>
       </div>
 
       {error && (
@@ -464,10 +530,10 @@ function Toggle({ on, onClick, label }: { on: boolean; onClick: () => void; labe
       type="button"
       onClick={onClick}
       className={`flex items-center gap-2 text-sm px-3.5 py-2 rounded-lg border transition-colors ${
-        on ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-300" : "border-white/10 text-white/45 hover:text-white/70"
+        on ? "bg-emerald-500/25 border-emerald-400/60 text-emerald-200 font-medium" : "border-white/10 text-white/40 hover:text-white/70"
       }`}
     >
-      <span className={`w-3.5 h-3.5 rounded-[4px] border flex items-center justify-center text-[10px] ${on ? "bg-emerald-400 border-emerald-400 text-black" : "border-white/30"}`}>
+      <span className={`w-4 h-4 rounded-[4px] border flex items-center justify-center text-[11px] ${on ? "bg-emerald-400 border-emerald-400 text-black" : "border-white/30"}`}>
         {on ? "✓" : ""}
       </span>
       {label}
@@ -510,12 +576,12 @@ function LeadCard({
   template,
   onStatus,
 }: {
-  lead: { id: string; name: string; address: string; phone: string; whatsapp: string; website: string; rating: number; reviewCount: number; photoCount: number; mapsUri: string; status: LeadStatus; lat?: number; lng?: number };
+  lead: { id: string; name: string; address: string; phone: string; whatsapp: string; website: string; rating: number; reviewCount: number; photoCount: number; photos?: string[]; mapsUri: string; status: LeadStatus; lat?: number; lng?: number };
   known: boolean;
   template: string;
   onStatus: (s: LeadStatus) => void;
 }) {
-  const [showMap, setShowMap] = useState(false);
+  const [expanded, setExpanded] = useState(false);
 
   async function setStatus(status: LeadStatus) {
     onStatus(status);
@@ -534,8 +600,10 @@ function LeadCard({
     if (lead.status === "new") setStatus("contacted");
   }
 
+  const photos = (lead.photos ?? []).slice(0, 6);
+
   return (
-    <div className={`bg-white/[0.03] border rounded-xl p-4 transition-colors ${showMap ? "border-white/25" : "border-white/10"}`}>
+    <div className={`bg-white/[0.03] border rounded-xl p-4 transition-colors ${expanded ? "border-white/25" : "border-white/10"}`}>
       <div className="flex flex-col sm:flex-row sm:items-center gap-3">
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
@@ -567,12 +635,12 @@ function LeadCard({
             </button>
           )}
           <button
-            onClick={() => setShowMap((v) => !v)}
+            onClick={() => setExpanded((v) => !v)}
             className={`px-3 py-2 rounded-lg border text-sm transition-colors ${
-              showMap ? "bg-white/10 border-white/30 text-white" : "border-white/15 hover:bg-white/5"
+              expanded ? "bg-white/10 border-white/30 text-white" : "border-white/15 hover:bg-white/5"
             }`}
           >
-            🗺 Hartă
+            {expanded ? "Ascunde ▲" : "Detalii ▾"}
           </button>
           <select
             value={lead.status}
@@ -587,27 +655,77 @@ function LeadCard({
         </div>
       </div>
 
-      {showMap && (
-        <div className="mt-3">
-          <iframe
-            title={`Hartă ${lead.name}`}
-            src={mapEmbedSrc(lead)}
-            loading="lazy"
-            className="w-full h-64 rounded-lg border border-white/10"
-            referrerPolicy="no-referrer-when-downgrade"
-          />
-          {lead.mapsUri && (
-            <a
-              href={lead.mapsUri}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-block mt-2 text-xs text-sky-300 hover:underline"
-            >
-              Deschide în Google Maps ↗
-            </a>
-          )}
+      {expanded && (
+        <div className="mt-4 pt-4 border-t border-white/10 grid md:grid-cols-2 gap-4">
+          {/* Left: photos + facts */}
+          <div className="flex flex-col gap-3">
+            {photos.length > 0 ? (
+              <div className="grid grid-cols-3 gap-1.5">
+                {photos.map((name) => (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    key={name}
+                    src={`/api/photo?name=${encodeURIComponent(name)}&w=400`}
+                    alt={lead.name}
+                    loading="lazy"
+                    className="w-full h-24 object-cover rounded-md bg-white/5"
+                  />
+                ))}
+              </div>
+            ) : (
+              <p className="text-xs text-white/30">Fără poze disponibile.</p>
+            )}
+
+            <dl className="text-sm flex flex-col gap-1.5">
+              <Detail label="Telefon">
+                {lead.phone ? (
+                  <a href={`tel:${lead.phone.replace(/\s/g, "")}`} className="text-sky-300 hover:underline">{lead.phone}</a>
+                ) : (
+                  <span className="text-white/30">—</span>
+                )}
+              </Detail>
+              <Detail label="Website">
+                {lead.website ? (
+                  <a href={lead.website} target="_blank" rel="noopener noreferrer" className="text-amber-300 hover:underline break-all">{lead.website}</a>
+                ) : (
+                  <span className="text-emerald-300">nu are</span>
+                )}
+              </Detail>
+              <Detail label="Recenzii">
+                <span className="text-white/70">⭐ {lead.rating || "—"} · {lead.reviewCount} recenzii</span>
+              </Detail>
+              <Detail label="Adresă">
+                <span className="text-white/70">{lead.address || "—"}</span>
+              </Detail>
+            </dl>
+          </div>
+
+          {/* Right: map */}
+          <div className="flex flex-col">
+            <iframe
+              title={`Hartă ${lead.name}`}
+              src={mapEmbedSrc(lead)}
+              loading="lazy"
+              className="w-full h-56 md:h-full min-h-56 rounded-lg border border-white/10"
+              referrerPolicy="no-referrer-when-downgrade"
+            />
+            {lead.mapsUri && (
+              <a href={lead.mapsUri} target="_blank" rel="noopener noreferrer" className="mt-2 text-xs text-sky-300 hover:underline">
+                Deschide în Google Maps ↗
+              </a>
+            )}
+          </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function Detail({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex gap-2">
+      <dt className="text-white/35 w-20 shrink-0">{label}</dt>
+      <dd className="min-w-0">{children}</dd>
     </div>
   );
 }

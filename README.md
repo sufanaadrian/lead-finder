@@ -6,8 +6,9 @@ Folosește **Google Places API (New)**, aceeași sursă de date pe care o vezi �
 
 ## Ce face
 
-- Caută după tip (pensiune, cabană, hotel…) + zonă (oraș / județ / regiune)
+- Caută după tip (pensiune, cabană, hotel…) + zonă scrisă SAU o **zonă aleasă pe hartă** (apeși un punct + rază în km, ex: 15 km în jurul Brașovului acoperă Moieciu, Poiana Brașov etc.)
 - Afișează pentru fiecare loc: nume, telefon, adresă, nr. recenzii, nr. poze, dacă are website, link Google Maps
+- Buton **„Detalii"** care deschide, în pagină, poze + telefon + website + recenzii + hartă — fără să mai schimbi tab-ul
 - Buton **WhatsApp** cu mesaj pre-completat (editabil, cu `{nume}` înlocuit automat) — la apăsare marchează lead-ul „Contactat"
 - **Bază de date locală** care reține tot ce ai găsit (`data/db.json`) — nu mai scrii pe nimeni de două ori
 - Status pentru fiecare lead: Nou / Contactat / Client / Ignorat, + notițe
@@ -26,6 +27,8 @@ Două niveluri de protecție:
    - Contorul „cereri azi" din colț (devine galben peste 80).
    - Selector adâncime căutare: **Rapid (20) = 1 cerere**, Mediu (40) = 2, Complet (60) = 3.
    - Baza de date evită re-căutările — folosește „Ascunde cele deja găsite".
+
+> **Despre poze:** fiecare poză încărcată la „Detalii" e o cerere separată către Google (SKU „Photo"). De aceea pozele se încarcă doar când deschizi „Detalii" și sunt limitate la 6 per loc. Harta din „Detalii" e gratuită (embed fără cheie). Harta pentru alegerea zonei folosește OpenStreetMap — complet gratuită, nu consumă nimic din Google.
 
 ## Setup (o singură dată)
 

@@ -33,13 +33,17 @@ type GooglePlace = {
   websiteUri?: string;
   rating?: number;
   userRatingCount?: number;
-  photos?: unknown[];
+  photos?: { name?: string }[];
   googleMapsUri?: string;
   location?: { latitude?: number; longitude?: number };
 };
 
 function normalize(p: GooglePlace): Lead {
   const intl = p.internationalPhoneNumber || "";
+  const photos = (Array.isArray(p.photos) ? p.photos : [])
+    .map((ph) => ph?.name)
+    .filter((n): n is string => !!n)
+    .slice(0, 10); // cap stored references; we only display a handful
   return {
     id: p.id || crypto.randomUUID(),
     name: p.displayName?.text || "(fără nume)",
@@ -49,19 +53,27 @@ function normalize(p: GooglePlace): Lead {
     website: p.websiteUri || "",
     rating: p.rating ?? 0,
     reviewCount: p.userRatingCount ?? 0,
-    photoCount: Array.isArray(p.photos) ? p.photos.length : 0,
+    photoCount: photos.length,
+    photos,
     mapsUri: p.googleMapsUri || "",
     lat: p.location?.latitude,
     lng: p.location?.longitude,
   };
 }
 
+type Rectangle = {
+  low: { latitude: number; longitude: number };
+  high: { latitude: number; longitude: number };
+};
+
 // Runs a single text query, paginating up to `maxPages`. Never throws — returns
 // the leads found, how many requests it cost, and an error string if any.
+// When `restriction` is given, results are hard-bounded to that rectangle.
 async function searchOneTerm(
   textQuery: string,
   maxPages: number,
-  apiKey: string
+  apiKey: string,
+  restriction?: Rectangle
 ): Promise<{ leads: Lead[]; requests: number; error?: string }> {
   const leads: Lead[] = [];
   let pageToken: string | undefined;
@@ -81,6 +93,7 @@ async function searchOneTerm(
           textQuery,
           languageCode: "ro",
           regionCode: "RO",
+          ...(restriction ? { locationRestriction: { rectangle: restriction } } : {}),
           ...(pageToken ? { pageToken } : {}),
         }),
       });
@@ -106,6 +119,27 @@ async function searchOneTerm(
   return { leads, requests };
 }
 
+// Distance in km between two lat/lng points (haversine).
+function distanceKm(aLat: number, aLng: number, bLat: number, bLng: number): number {
+  const R = 6371;
+  const dLat = ((bLat - aLat) * Math.PI) / 180;
+  const dLng = ((bLng - aLng) * Math.PI) / 180;
+  const s =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((aLat * Math.PI) / 180) * Math.cos((bLat * Math.PI) / 180) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(s));
+}
+
+// Bounding rectangle that fully contains a circle (center + radius in km).
+function circleToRectangle(lat: number, lng: number, radiusKm: number): Rectangle {
+  const dLat = radiusKm / 111.32;
+  const dLng = radiusKm / (111.32 * Math.cos((lat * Math.PI) / 180) || 1);
+  return {
+    low: { latitude: lat - dLat, longitude: lng - dLng },
+    high: { latitude: lat + dLat, longitude: lng + dLng },
+  };
+}
+
 export async function POST(req: Request) {
   const apiKey = process.env.GOOGLE_PLACES_API_KEY;
   if (!apiKey) {
@@ -115,7 +149,13 @@ export async function POST(req: Request) {
     );
   }
 
-  let body: { terms?: string[]; term?: string; location?: string; pages?: number };
+  let body: {
+    terms?: string[];
+    term?: string;
+    location?: string;
+    pages?: number;
+    area?: { lat?: number; lng?: number; radiusKm?: number };
+  };
   try {
     body = await req.json();
   } catch {
@@ -128,9 +168,20 @@ export async function POST(req: Request) {
     new Set(rawTerms.map((t) => (t || "").trim()).filter(Boolean))
   );
   const location = (body.location || "").trim();
-  if (terms.length === 0 || !location) {
+
+  // Either a typed location OR a map area is required.
+  const area =
+    body.area && typeof body.area.lat === "number" && typeof body.area.lng === "number"
+      ? {
+          lat: body.area.lat,
+          lng: body.area.lng,
+          radiusKm: Math.min(Math.max(body.area.radiusKm ?? 10, 1), 50),
+        }
+      : null;
+
+  if (terms.length === 0 || (!location && !area)) {
     return Response.json(
-      { error: "Alege cel puțin un tip (ex: pensiune) și o zonă (ex: Brașov)." },
+      { error: "Alege cel puțin un tip (ex: pensiune) și o zonă (text sau pe hartă)." },
       { status: 400 }
     );
   }
@@ -138,10 +189,11 @@ export async function POST(req: Request) {
   // Each page is up to 20 results & costs 1 request; Google caps Text Search at 60.
   const maxPages = Math.min(Math.max(body.pages ?? 3, 1), 3);
 
-  // Run each type's query in parallel; pages within a query stay sequential
-  // (each page needs the previous page's token).
+  // With a map area we hard-bound each query to the circle's bounding box and
+  // query by type alone; otherwise we append the typed location to the query.
+  const rect = area ? circleToRectangle(area.lat, area.lng, area.radiusKm) : undefined;
   const settled = await Promise.all(
-    terms.map((t) => searchOneTerm(`${t} ${location}`, maxPages, apiKey))
+    terms.map((t) => searchOneTerm(area ? t : `${t} ${location}`, maxPages, apiKey, rect))
   );
 
   // Merge + dedup across all types by stable place id.
@@ -154,6 +206,12 @@ export async function POST(req: Request) {
     if (r.error && !firstError) firstError = r.error;
     for (const lead of r.leads) {
       if (seen.has(lead.id)) continue;
+      // With an area, keep only places truly inside the circle (the bbox is
+      // a bit larger than the circle).
+      if (area) {
+        if (typeof lead.lat !== "number" || typeof lead.lng !== "number") continue;
+        if (distanceKm(area.lat, area.lng, lead.lat, lead.lng) > area.radiusKm) continue;
+      }
       seen.add(lead.id);
       found.push(lead);
     }
@@ -167,9 +225,12 @@ export async function POST(req: Request) {
     return Response.json({ error: firstError, usageToday }, { status: 502 });
   }
 
+  const where = area ? `${area.radiusKm} km în jurul punctului ales` : location;
+  const queryLabel = `${terms.join(", ")} — ${where}`;
+
   // Snapshot which results we already had BEFORE saving this batch.
   const existing = getExistingStatuses(found.map((l) => l.id));
-  upsertLeads(found, terms.join(", ") + " — " + location);
+  upsertLeads(found, queryLabel);
 
   const results: SearchResult[] = found.map((l) => ({
     ...l,
@@ -179,7 +240,7 @@ export async function POST(req: Request) {
 
   return Response.json({
     results,
-    query: `${terms.join(", ")} — ${location}`,
+    query: queryLabel,
     requestsUsed,
     usageToday,
     warning: firstError || undefined,
