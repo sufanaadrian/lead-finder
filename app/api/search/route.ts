@@ -6,10 +6,29 @@ import { recordUsage, upsertLeads, getExistingStatuses } from "@/lib/db";
 import type { Lead, SearchResult } from "@/lib/types";
 
 const SEARCH_URL = "https://places.googleapis.com/v1/places:searchText";
+const NEARBY_URL = "https://places.googleapis.com/v1/places:searchNearby";
+
+// Lodging-related Google place types — used for category search so we catch
+// places regardless of how they're named (English, "A-frame", etc.).
+const LODGING_TYPES = [
+  "lodging",
+  "bed_and_breakfast",
+  "guest_house",
+  "cottage",
+  "hotel",
+  "motel",
+  "hostel",
+  "inn",
+  "resort_hotel",
+  "farmstay",
+  "campground",
+  "camping_cabin",
+  "rv_park",
+];
 
 // Fields we ask Google for. Keep this tight — phone & website are billed at a
 // higher SKU, but they're exactly what we need, so it's worth it.
-const FIELD_MASK = [
+const PLACE_FIELDS = [
   "places.id",
   "places.displayName",
   "places.formattedAddress",
@@ -24,8 +43,9 @@ const FIELD_MASK = [
   "places.addressComponents",
   "places.primaryType",
   "places.primaryTypeDisplayName",
-  "nextPageToken",
-].join(",");
+];
+const FIELD_MASK = [...PLACE_FIELDS, "nextPageToken"].join(",");
+const NEARBY_FIELD_MASK = PLACE_FIELDS.join(","); // Nearby has no pagination
 
 type AddressComponent = { longText?: string; shortText?: string; types?: string[] };
 
@@ -135,6 +155,47 @@ async function searchOneTerm(
   return { leads, requests };
 }
 
+// Category search: finds lodging-type places in a circle, regardless of name.
+// One request, up to 20 results (Nearby New has no pagination).
+async function searchNearbyCategory(
+  lat: number,
+  lng: number,
+  radiusKm: number,
+  apiKey: string
+): Promise<{ leads: Lead[]; requests: number; error?: string }> {
+  let res: Response;
+  try {
+    res = await fetch(NEARBY_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": apiKey,
+        "X-Goog-FieldMask": NEARBY_FIELD_MASK,
+      },
+      body: JSON.stringify({
+        includedTypes: LODGING_TYPES,
+        maxResultCount: 20,
+        languageCode: "ro",
+        regionCode: "RO",
+        locationRestriction: {
+          circle: {
+            center: { latitude: lat, longitude: lng },
+            radius: Math.min(radiusKm * 1000, 50000),
+          },
+        },
+      }),
+    });
+  } catch (err) {
+    return { leads: [], requests: 0, error: `Eroare de rețea: ${String(err)}` };
+  }
+  if (!res.ok) {
+    const detail = await res.text();
+    return { leads: [], requests: 1, error: `Eroare Nearby (${res.status}). ${detail.slice(0, 200)}` };
+  }
+  const data: { places?: GooglePlace[] } = await res.json();
+  return { leads: (data.places || []).map(normalize), requests: 1 };
+}
+
 // Distance in km between two lat/lng points (haversine).
 function distanceKm(aLat: number, aLng: number, bLat: number, bLng: number): number {
   const R = 6371;
@@ -207,10 +268,13 @@ export async function POST(req: Request) {
 
   // With a map area we hard-bound each query to the circle's bounding box and
   // query by type alone; otherwise we append the typed location to the query.
+  // In area mode we ALSO run a category (Nearby) search so we catch lodging
+  // that the word search would miss (English/oddly-named places).
   const rect = area ? circleToRectangle(area.lat, area.lng, area.radiusKm) : undefined;
-  const settled = await Promise.all(
-    terms.map((t) => searchOneTerm(area ? t : `${t} ${location}`, maxPages, apiKey, rect))
-  );
+  const settled = await Promise.all([
+    ...terms.map((t) => searchOneTerm(area ? t : `${t} ${location}`, maxPages, apiKey, rect)),
+    ...(area ? [searchNearbyCategory(area.lat, area.lng, area.radiusKm, apiKey)] : []),
+  ]);
 
   // Merge + dedup across all types by stable place id.
   const found: Lead[] = [];

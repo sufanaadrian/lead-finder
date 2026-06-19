@@ -156,7 +156,8 @@ function SearchTab({ template, onUsage }: { template: string; onUsage: (n: numbe
     setCustomType("");
   }
 
-  const estRequests = types.length * pages;
+  // In map mode we also run one category (Nearby) search.
+  const estRequests = types.length * pages + (areaMode === "map" ? 1 : 0);
 
   const useMap = areaMode === "map";
   const canSearch = types.length > 0 && (useMap ? !!center : location.trim().length > 0);
@@ -322,6 +323,9 @@ function SearchTab({ template, onUsage }: { template: string; onUsage: (n: numbe
                   {center ? `Centru: ${center.lat.toFixed(3)}, ${center.lng.toFixed(3)}` : "Apasă pe hartă pentru a alege centrul"}
                 </span>
               </div>
+              <p className="text-[11px] text-white/30 mt-1.5">
+                Pe hartă căutăm și după categorie (tip Google: cazare), nu doar după cuvânt — prinde și locurile cu nume în engleză.
+              </p>
             </div>
           )}
         </div>

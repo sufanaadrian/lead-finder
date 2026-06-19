@@ -54,8 +54,13 @@ npm run dev
 
 Deschide [localhost:3000](http://localhost:3000).
 
+## Cum caută (important)
+
+- **Mod „Scrie zona"**: căutare după cuvânt (Text Search). Poate rata locuri cu nume în engleză sau neobișnuit.
+- **Mod „Alege pe hartă"** (recomandat): căutare **hibridă** — pe lângă cuvinte, rulează și o căutare **după categorie** (tip Google: `lodging`, `guest_house`, `cottage`, `bed_and_breakfast`…), apoi le combină și elimină duplicatele. Prinde și locurile numite „A-Frame", „Mountain Chalet" etc. Costă +1 cerere per căutare.
+
 ## Note
 
-- Google returnează maxim **60 de rezultate per căutare**. Pentru o regiune mare, caută oraș cu oraș (oricum vrei să țintești local).
+- Google returnează maxim **60 de rezultate per căutare** (Text Search); căutarea pe categorie (Nearby) întoarce max 20 per cerc — folosește un cerc mai mic dacă zona e foarte densă. Pentru o regiune mare, caută oraș cu oraș (oricum vrei să țintești local).
 - Unele locuri nu au telefonul completat pe Google Maps — filtrul „doar cu telefon" le ascunde.
 - Costul: fiecare căutare completă (până la 3 pagini) ≈ 0,10–0,12$. Cu creditul gratuit lunar, faci peste o mie de căutări fără să plătești.
