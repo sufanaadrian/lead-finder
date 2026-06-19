@@ -4,24 +4,25 @@
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
 import path from "path";
-import type { Lead, LeadStatus, StoredLead } from "./types";
+import type { Lead, LeadStatus, SearchRecord, StoredLead } from "./types";
 
 const DB_PATH = path.join(process.cwd(), "data", "db.json");
 
 type DbShape = {
   leads: Record<string, StoredLead>;
   usage: Record<string, number>; // "YYYY-MM-DD" -> Google API request count
+  searches: SearchRecord[]; // history, for the coverage view
 };
 
 function emptyDb(): DbShape {
-  return { leads: {}, usage: {} };
+  return { leads: {}, usage: {}, searches: [] };
 }
 
 function readDb(): DbShape {
   if (!existsSync(DB_PATH)) return emptyDb();
   try {
     const parsed = JSON.parse(readFileSync(DB_PATH, "utf-8"));
-    return { leads: parsed.leads ?? {}, usage: parsed.usage ?? {} };
+    return { leads: parsed.leads ?? {}, usage: parsed.usage ?? {}, searches: parsed.searches ?? [] };
   } catch {
     return emptyDb();
   }
@@ -84,6 +85,18 @@ export function upsertLeads(leads: Lead[], query: string): Record<string, Stored
 
 export function getAllLeads(): StoredLead[] {
   return Object.values(readDb().leads).sort((a, b) => (a.savedAt < b.savedAt ? 1 : -1));
+}
+
+// Append a search to the history (keep the most recent 200).
+export function recordSearch(rec: SearchRecord): void {
+  const db = readDb();
+  db.searches.push(rec);
+  if (db.searches.length > 200) db.searches = db.searches.slice(-200);
+  writeDb(db);
+}
+
+export function getSearches(): SearchRecord[] {
+  return readDb().searches;
 }
 
 // For the given ids, returns the status of any that already exist in the DB.

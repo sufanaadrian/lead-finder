@@ -44,3 +44,28 @@ export type SearchResult = Lead & {
   known: boolean;
   status: LeadStatus;
 };
+
+// One past search, kept so we can show coverage (where we've already looked).
+export type SearchRecord = {
+  at: string;
+  terms: string[];
+  location?: string;
+  area?: { lat: number; lng: number; radiusKm: number };
+  found: number;
+};
+
+// How good a lead is as a website-sales target: no website + reachable + an
+// active (reviewed, photographed) business scores highest.
+export function scoreLead(l: {
+  website: string;
+  phone: string;
+  reviewCount: number;
+  photoCount: number;
+}): number {
+  let s = 0;
+  if (!l.website) s += 5;
+  if (l.phone) s += 3;
+  s += Math.min(l.reviewCount, 50) / 10; // up to +5
+  s += Math.min(l.photoCount, 10) / 5; // up to +2
+  return Math.round(s * 10) / 10;
+}

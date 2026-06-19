@@ -2,7 +2,7 @@
 // used (for quota tracking), saves the results to the local DB (for dedup), and
 // returns each result annotated with whether we've seen it before.
 
-import { recordUsage, upsertLeads, getExistingStatuses } from "@/lib/db";
+import { recordUsage, upsertLeads, getExistingStatuses, recordSearch } from "@/lib/db";
 import type { Lead, SearchResult } from "@/lib/types";
 
 const SEARCH_URL = "https://places.googleapis.com/v1/places:searchText";
@@ -311,6 +311,13 @@ export async function POST(req: Request) {
   // Snapshot which results we already had BEFORE saving this batch.
   const existing = getExistingStatuses(found.map((l) => l.id));
   upsertLeads(found, queryLabel);
+  recordSearch({
+    at: new Date().toISOString(),
+    terms,
+    location: area ? undefined : location,
+    area: area ?? undefined,
+    found: found.length,
+  });
 
   const results: SearchResult[] = found.map((l) => ({
     ...l,

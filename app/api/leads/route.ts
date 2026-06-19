@@ -2,13 +2,17 @@
 //   GET   /api/leads            -> all saved leads + today's API usage
 //   PATCH /api/leads            -> { id, status?, note? } update one lead
 
-import { getAllLeads, updateLead, getUsageToday } from "@/lib/db";
+import { getAllLeads, updateLead, getUsageToday, getSearches } from "@/lib/db";
 import type { LeadStatus } from "@/lib/types";
 
 const VALID_STATUS: LeadStatus[] = ["new", "contacted", "client", "skip"];
 
 export async function GET() {
-  return Response.json({ leads: getAllLeads(), usageToday: getUsageToday() });
+  return Response.json({
+    leads: getAllLeads(),
+    usageToday: getUsageToday(),
+    searches: getSearches(),
+  });
 }
 
 export async function PATCH(req: Request) {
