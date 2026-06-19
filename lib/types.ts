@@ -51,6 +51,7 @@ export type SearchRecord = {
   terms: string[];
   location?: string;
   area?: { lat: number; lng: number; radiusKm: number };
+  bounds?: { minLat: number; maxLat: number; minLng: number; maxLng: number };
   found: number;
 };
 

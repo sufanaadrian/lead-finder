@@ -286,6 +286,9 @@ export async function POST(req: Request) {
     if (r.error && !firstError) firstError = r.error;
     for (const lead of r.leads) {
       if (seen.has(lead.id)) continue;
+      // The whole tool is about places WITHOUT a website — drop the rest at
+      // the source so they never enter the database.
+      if (lead.website) continue;
       // With an area, keep only places truly inside the circle (the bbox is
       // a bit larger than the circle).
       if (area) {
@@ -308,6 +311,18 @@ export async function POST(req: Request) {
   const where = area ? `${area.radiusKm} km în jurul punctului ales` : location;
   const queryLabel = `${terms.join(", ")} — ${where}`;
 
+  // Geographic extent of the results — used to shade "searched" zones on the
+  // coverage map (e.g. a whole-city text search).
+  const coords = found.filter((l) => typeof l.lat === "number" && typeof l.lng === "number");
+  const bounds = coords.length
+    ? {
+        minLat: Math.min(...coords.map((l) => l.lat!)),
+        maxLat: Math.max(...coords.map((l) => l.lat!)),
+        minLng: Math.min(...coords.map((l) => l.lng!)),
+        maxLng: Math.max(...coords.map((l) => l.lng!)),
+      }
+    : undefined;
+
   // Snapshot which results we already had BEFORE saving this batch.
   const existing = getExistingStatuses(found.map((l) => l.id));
   upsertLeads(found, queryLabel);
@@ -316,6 +331,7 @@ export async function POST(req: Request) {
     terms,
     location: area ? undefined : location,
     area: area ?? undefined,
+    bounds,
     found: found.length,
   });
 

@@ -2,16 +2,19 @@
 //   GET   /api/leads            -> all saved leads + today's API usage
 //   PATCH /api/leads            -> { id, status?, note? } update one lead
 
-import { getAllLeads, updateLead, getUsageToday, getSearches } from "@/lib/db";
+import { getAllLeads, updateLead, getUsageToday, getSearches, purgeWebsiteLeads, countLeadsMissingGeo } from "@/lib/db";
 import type { LeadStatus } from "@/lib/types";
 
 const VALID_STATUS: LeadStatus[] = ["new", "contacted", "client", "skip"];
 
 export async function GET() {
+  // Clean out any leads that have a website — we only keep ones without.
+  purgeWebsiteLeads();
   return Response.json({
     leads: getAllLeads(),
     usageToday: getUsageToday(),
     searches: getSearches(),
+    missingGeo: countLeadsMissingGeo(),
   });
 }
 

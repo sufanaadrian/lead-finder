@@ -44,6 +44,18 @@ function sortLeads<T extends { website: string; phone: string; reviewCount: numb
 
 const FOLLOWUP_DAYS = 3;
 
+// Opens the native WhatsApp app via the whatsapp:// scheme WITHOUT navigating
+// the page away (an anchor click triggers the OS handler but leaves React
+// state intact — important so the contact stepper can advance afterwards).
+function openWhatsAppApp(phone: string, message: string) {
+  const a = document.createElement("a");
+  a.href = `whatsapp://send?phone=${phone}&text=${encodeURIComponent(message)}`;
+  a.rel = "noopener";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
 const TYPE_OPTIONS = [
   "pensiune",
   "cabană",
@@ -166,7 +178,6 @@ function SearchTab({ template, onUsage }: { template: string; onUsage: (n: numbe
   const [query, setQuery] = useState("");
   const [lastUsed, setLastUsed] = useState<number | null>(null);
 
-  const [onlyNoWebsite, setOnlyNoWebsite] = useState(true);
   const [requirePhone, setRequirePhone] = useState(true);
   const [requireReviews, setRequireReviews] = useState(false);
   const [requirePhotos, setRequirePhotos] = useState(false);
@@ -239,15 +250,15 @@ function SearchTab({ template, onUsage }: { template: string; onUsage: (n: numbe
     if (!results) return [];
     const f = results.filter((l) => {
       if (dismissed.has(l.id)) return false;
+      if (l.website) return false; // safety net — only no-website places
       if (hideKnown && l.known) return false;
-      if (onlyNoWebsite && l.website) return false;
       if (requirePhone && !l.phone) return false;
       if (requireReviews && l.reviewCount <= 0) return false;
       if (requirePhotos && l.photoCount <= 0) return false;
       return true;
     });
     return sortLeads(f, sort);
-  }, [results, dismissed, hideKnown, onlyNoWebsite, requirePhone, requireReviews, requirePhotos, sort]);
+  }, [results, dismissed, hideKnown, requirePhone, requireReviews, requirePhotos, sort]);
 
   // Mark a lead handled and remove it from view (contacted/skip/client).
   function handleStatus(id: string, s: LeadStatus) {
@@ -393,10 +404,9 @@ function SearchTab({ template, onUsage }: { template: string; onUsage: (n: numbe
       </form>
 
       <div className="mb-5">
-        <p className="text-xs text-white/35 mb-2">Filtre (verde = activ):</p>
+        <p className="text-xs text-white/35 mb-2">Doar locuri <strong className="text-emerald-300/80">fără website</strong>. Filtre (verde = activ):</p>
         <div className="flex flex-wrap gap-2.5">
           <Toggle on={hideKnown} onClick={() => setHideKnown((v) => !v)} label="Ascunde cele deja găsite" />
-          <Toggle on={onlyNoWebsite} onClick={() => setOnlyNoWebsite((v) => !v)} label="Doar fără website" />
           <Toggle on={requirePhone} onClick={() => setRequirePhone((v) => !v)} label="Doar cu telefon" />
           <Toggle on={requireReviews} onClick={() => setRequireReviews((v) => !v)} label="Doar cu recenzii" />
           <Toggle on={requirePhotos} onClick={() => setRequirePhotos((v) => !v)} label="Doar cu poze" />
@@ -782,10 +792,7 @@ function LeadCard({
   }
 
   function openWhatsApp() {
-    const text = encodeURIComponent(template.replaceAll("{nume}", lead.name));
-    // Open the native WhatsApp app directly (no web tab). On a Mac with the
-    // app installed this jumps straight into the chat.
-    window.location.href = `whatsapp://send?phone=${lead.whatsapp}&text=${text}`;
+    openWhatsAppApp(lead.whatsapp, template.replaceAll("{nume}", lead.name));
     if (lead.status === "new") setStatus("contacted");
   }
 
@@ -806,11 +813,6 @@ function LeadCard({
             <span className={`text-[10px] px-1.5 py-0.5 rounded border ${STATUS_STYLE[lead.status]}`}>
               {STATUS_LABELS[lead.status]}
             </span>
-            {lead.website ? (
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30">are website</span>
-            ) : (
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">fără website</span>
-            )}
             {lead.typeLabel && (
               <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/8 text-white/55 border border-white/15">{lead.typeLabel}</span>
             )}
@@ -951,8 +953,7 @@ function ContactStepper({
 
   function whatsapp() {
     if (!lead) return;
-    const text = encodeURIComponent(template.replaceAll("{nume}", lead.name));
-    window.location.href = `whatsapp://send?phone=${lead.whatsapp}&text=${text}`;
+    openWhatsAppApp(lead.whatsapp, template.replaceAll("{nume}", lead.name));
     patch({ status: "contacted" });
     next();
   }
@@ -1021,22 +1022,43 @@ function ContactStepper({
 function Dashboard() {
   const [leads, setLeads] = useState<StoredLead[] | null>(null);
   const [searches, setSearches] = useState<SearchRecord[]>([]);
+  const [missingGeo, setMissingGeo] = useState(0);
+  const [enriching, setEnriching] = useState(false);
 
-  useEffect(() => {
-    (async () => {
-      const res = await fetch("/api/leads");
-      const data = await res.json();
-      setLeads(data.leads ?? []);
-      setSearches(data.searches ?? []);
-    })();
+  const load = useCallback(async () => {
+    const res = await fetch("/api/leads");
+    const data = await res.json();
+    setLeads(data.leads ?? []);
+    setSearches(data.searches ?? []);
+    setMissingGeo(data.missingGeo ?? 0);
   }, []);
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  // Fill județ/localitate for leads with coordinates, in batches, until done.
+  async function enrich() {
+    setEnriching(true);
+    try {
+      let remaining = 1;
+      while (remaining > 0) {
+        const res = await fetch("/api/enrich", { method: "POST" });
+        const data = await res.json();
+        remaining = data.remaining ?? 0;
+        setMissingGeo(remaining);
+        if (!data.processed) break; // nothing advanced — avoid an infinite loop
+      }
+      await load();
+    } finally {
+      setEnriching(false);
+    }
+  }
 
   const totals = useMemo(() => {
-    const t = { all: 0, new: 0, contacted: 0, client: 0, skip: 0, noWebsite: 0, interested: 0 };
+    const t = { all: 0, new: 0, contacted: 0, client: 0, skip: 0, interested: 0 };
     for (const l of leads ?? []) {
       t.all++;
       t[l.status]++;
-      if (!l.website) t.noWebsite++;
       if (l.interested) t.interested++;
     }
     return t;
@@ -1056,27 +1078,48 @@ function Dashboard() {
     return Array.from(map.entries()).sort((a, b) => b[1].found - a[1].found);
   }, [leads]);
 
-  // Coverage circles from area searches.
-  const circles = useMemo(
+  // Heatmap points = every lead we have coordinates for.
+  const points = useMemo(
     () =>
-      searches
-        .filter((s) => s.area)
-        .map((s) => ({ lat: s.area!.lat, lng: s.area!.lng, radiusKm: s.area!.radiusKm, label: s.terms.join(", ") })),
+      (leads ?? [])
+        .filter((l) => typeof l.lat === "number" && typeof l.lng === "number")
+        .map((l) => ({ lat: l.lat as number, lng: l.lng as number })),
+    [leads]
+  );
+  // Shaded searched zones: circles for area searches, rectangles for text searches.
+  const circles = useMemo(
+    () => searches.filter((s) => s.area).map((s) => ({ lat: s.area!.lat, lng: s.area!.lng, radiusKm: s.area!.radiusKm })),
     [searches]
   );
-  const textSearches = useMemo(() => searches.filter((s) => !s.area).slice(-15).reverse(), [searches]);
+  const rects = useMemo(() => searches.filter((s) => !s.area && s.bounds).map((s) => s.bounds!), [searches]);
+  const hasCoverage = points.length > 0 || circles.length > 0 || rects.length > 0;
 
   if (!leads) return <p className="text-white/30 text-center py-12">Se încarcă…</p>;
 
   return (
     <div className="flex flex-col gap-6">
-      {/* Overall stats */}
+      {/* Overall stats — every lead here is already website-free */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <Stat label="Total găsite" value={totals.all} />
-        <Stat label="Fără website" value={totals.noWebsite} accent="emerald" />
+        <Stat label="Total (fără website)" value={totals.all} accent="emerald" />
+        <Stat label="Noi (necontactate)" value={totals.new} />
         <Stat label="Contactate" value={totals.contacted} accent="sky" />
         <Stat label="Clienți" value={totals.client} accent="violet" />
       </div>
+
+      {missingGeo > 0 && (
+        <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl px-4 py-3 flex items-center justify-between gap-3 flex-wrap">
+          <p className="text-sm text-amber-200/90">
+            {missingGeo} {missingGeo === 1 ? "lead nu are" : "leaduri nu au"} județ/localitate completate.
+          </p>
+          <button
+            onClick={enrich}
+            disabled={enriching}
+            className="text-sm px-4 py-2 rounded-lg bg-amber-400/90 text-black font-medium hover:bg-amber-300 disabled:opacity-60"
+          >
+            {enriching ? `Se completează… (rămase: ${missingGeo})` : "Completează din hartă"}
+          </button>
+        </div>
+      )}
 
       {/* Per-area stats */}
       <div>
@@ -1109,25 +1152,18 @@ function Dashboard() {
         )}
       </div>
 
-      {/* Coverage map */}
+      {/* Coverage heatmap */}
       <div>
-        <h3 className="text-sm font-semibold text-white/70 mb-2">Acoperire (zone căutate pe hartă)</h3>
-        {circles.length === 0 ? (
-          <p className="text-white/30 text-sm">Nicio căutare pe hartă încă. Folosește „Alege pe hartă" în tab-ul Căutare.</p>
+        <h3 className="text-sm font-semibold text-white/70 mb-2">Acoperire — unde ai căutat deja</h3>
+        {!hasCoverage ? (
+          <p className="text-white/30 text-sm">Încă nimic de afișat. Fă câteva căutări întâi.</p>
         ) : (
-          <CoverageMap circles={circles} />
-        )}
-        {textSearches.length > 0 && (
-          <div className="mt-3">
-            <p className="text-xs text-white/35 mb-1.5">Căutări scrise recente:</p>
-            <div className="flex flex-wrap gap-1.5">
-              {textSearches.map((s, idx) => (
-                <span key={idx} className="text-xs px-2 py-1 rounded-md bg-white/5 border border-white/10 text-white/50">
-                  {s.terms.join(", ")} — {s.location} ({s.found})
-                </span>
-              ))}
-            </div>
-          </div>
+          <>
+            <CoverageMap points={points} circles={circles} rects={rects} />
+            <p className="text-[11px] text-white/30 mt-1.5">
+              Zonele colorate = locuri găsite (heatmap). Cercurile verzi = căutări pe hartă. Dreptunghiurile albastre = căutări scrise (aprox. zona orașului).
+            </p>
+          </>
         )}
       </div>
     </div>

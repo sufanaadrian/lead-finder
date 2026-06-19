@@ -59,6 +59,7 @@ export function upsertLeads(leads: Lead[], query: string): Record<string, Stored
   const db = readDb();
   const now = new Date().toISOString();
   for (const lead of leads) {
+    if (lead.website) continue; // never store places that already have a website
     const existing = db.leads[lead.id];
     if (existing) {
       db.leads[lead.id] = {
@@ -97,6 +98,45 @@ export function recordSearch(rec: SearchRecord): void {
 
 export function getSearches(): SearchRecord[] {
   return readDb().searches;
+}
+
+// Removes any leads that have a website — this tool only cares about places
+// without one. Returns how many were removed. Cheap no-op if there are none.
+export function purgeWebsiteLeads(): number {
+  const db = readDb();
+  let removed = 0;
+  for (const [id, lead] of Object.entries(db.leads)) {
+    if (lead.website) {
+      delete db.leads[id];
+      removed++;
+    }
+  }
+  if (removed > 0) writeDb(db);
+  return removed;
+}
+
+// Leads that have coordinates but no locality/county yet — candidates for
+// reverse-geocode enrichment.
+export function getLeadsMissingGeo(limit: number): StoredLead[] {
+  return Object.values(readDb().leads)
+    .filter((l) => typeof l.lat === "number" && typeof l.lng === "number" && (!l.locality || !l.county))
+    .slice(0, limit);
+}
+
+export function countLeadsMissingGeo(): number {
+  return Object.values(readDb().leads).filter(
+    (l) => typeof l.lat === "number" && typeof l.lng === "number" && (!l.locality || !l.county)
+  ).length;
+}
+
+export function setLeadGeo(id: string, locality: string, county: string): void {
+  const db = readDb();
+  const lead = db.leads[id];
+  if (!lead) return;
+  if (locality) lead.locality = locality;
+  if (county) lead.county = county;
+  db.leads[id] = lead;
+  writeDb(db);
 }
 
 // For the given ids, returns the status of any that already exist in the DB.
