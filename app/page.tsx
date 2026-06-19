@@ -495,17 +495,28 @@ const STATUS_STYLE: Record<LeadStatus, string> = {
   skip: "bg-white/5 text-white/40 border-white/15",
 };
 
+// Keyless Google Maps embed. Uses exact coordinates when we have them, else
+// falls back to a name+address search. No API key needed (and none exposed).
+function mapEmbedSrc(lead: { name: string; address: string; lat?: number; lng?: number }): string {
+  if (typeof lead.lat === "number" && typeof lead.lng === "number") {
+    return `https://maps.google.com/maps?q=${lead.lat},${lead.lng}&z=16&output=embed`;
+  }
+  return `https://maps.google.com/maps?q=${encodeURIComponent(`${lead.name} ${lead.address}`)}&z=15&output=embed`;
+}
+
 function LeadCard({
   lead,
   known,
   template,
   onStatus,
 }: {
-  lead: { id: string; name: string; address: string; phone: string; whatsapp: string; website: string; rating: number; reviewCount: number; photoCount: number; mapsUri: string; status: LeadStatus };
+  lead: { id: string; name: string; address: string; phone: string; whatsapp: string; website: string; rating: number; reviewCount: number; photoCount: number; mapsUri: string; status: LeadStatus; lat?: number; lng?: number };
   known: boolean;
   template: string;
   onStatus: (s: LeadStatus) => void;
 }) {
+  const [showMap, setShowMap] = useState(false);
+
   async function setStatus(status: LeadStatus) {
     onStatus(status);
     try {
@@ -524,52 +535,79 @@ function LeadCard({
   }
 
   return (
-    <div className="bg-white/[0.03] border border-white/10 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center gap-3">
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2 flex-wrap">
-          <h3 className="font-semibold truncate">{lead.name}</h3>
-          <span className={`text-[10px] px-1.5 py-0.5 rounded border ${STATUS_STYLE[lead.status]}`}>
-            {STATUS_LABELS[lead.status]}
-          </span>
-          {lead.website ? (
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30">are website</span>
-          ) : (
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">fără website</span>
-          )}
-          {known && (
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/10 text-white/50 border border-white/15">deja salvat</span>
-          )}
+    <div className={`bg-white/[0.03] border rounded-xl p-4 transition-colors ${showMap ? "border-white/25" : "border-white/10"}`}>
+      <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <h3 className="font-semibold truncate">{lead.name}</h3>
+            <span className={`text-[10px] px-1.5 py-0.5 rounded border ${STATUS_STYLE[lead.status]}`}>
+              {STATUS_LABELS[lead.status]}
+            </span>
+            {lead.website ? (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30">are website</span>
+            ) : (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">fără website</span>
+            )}
+            {known && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/10 text-white/50 border border-white/15">deja salvat</span>
+            )}
+          </div>
+          <p className="text-sm text-white/45 truncate">{lead.address}</p>
+          <div className="flex items-center gap-3 text-xs text-white/40 mt-1">
+            {lead.phone ? <span>📞 {lead.phone}</span> : <span className="text-white/25">fără telefon</span>}
+            <span>⭐ {lead.rating || "—"} ({lead.reviewCount})</span>
+            <span>🖼 {lead.photoCount}</span>
+          </div>
         </div>
-        <p className="text-sm text-white/45 truncate">{lead.address}</p>
-        <div className="flex items-center gap-3 text-xs text-white/40 mt-1">
-          {lead.phone ? <span>📞 {lead.phone}</span> : <span className="text-white/25">fără telefon</span>}
-          <span>⭐ {lead.rating || "—"} ({lead.reviewCount})</span>
-          <span>🖼 {lead.photoCount}</span>
+
+        <div className="flex flex-wrap gap-2 shrink-0">
+          {lead.whatsapp && (
+            <button onClick={openWhatsApp} className="px-3 py-2 rounded-lg bg-emerald-500 text-black text-sm font-medium hover:bg-emerald-400 transition-colors">
+              WhatsApp
+            </button>
+          )}
+          <button
+            onClick={() => setShowMap((v) => !v)}
+            className={`px-3 py-2 rounded-lg border text-sm transition-colors ${
+              showMap ? "bg-white/10 border-white/30 text-white" : "border-white/15 hover:bg-white/5"
+            }`}
+          >
+            🗺 Hartă
+          </button>
+          <select
+            value={lead.status}
+            onChange={(e) => setStatus(e.target.value as LeadStatus)}
+            className="px-2 py-2 rounded-lg border border-white/15 bg-black/40 text-sm text-white/70 outline-none hover:bg-white/5"
+            title="Schimbă statusul"
+          >
+            {(["new", "contacted", "client", "skip"] as LeadStatus[]).map((s) => (
+              <option key={s} value={s} className="bg-zinc-900">{STATUS_LABELS[s]}</option>
+            ))}
+          </select>
         </div>
       </div>
 
-      <div className="flex flex-wrap gap-2 shrink-0">
-        {lead.whatsapp && (
-          <button onClick={openWhatsApp} className="px-3 py-2 rounded-lg bg-emerald-500 text-black text-sm font-medium hover:bg-emerald-400 transition-colors">
-            WhatsApp
-          </button>
-        )}
-        {lead.mapsUri && (
-          <a href={lead.mapsUri} target="_blank" rel="noopener noreferrer" className="px-3 py-2 rounded-lg border border-white/15 text-sm hover:bg-white/5 transition-colors">
-            Maps
-          </a>
-        )}
-        <select
-          value={lead.status}
-          onChange={(e) => setStatus(e.target.value as LeadStatus)}
-          className="px-2 py-2 rounded-lg border border-white/15 bg-black/40 text-sm text-white/70 outline-none hover:bg-white/5"
-          title="Schimbă statusul"
-        >
-          {(["new", "contacted", "client", "skip"] as LeadStatus[]).map((s) => (
-            <option key={s} value={s} className="bg-zinc-900">{STATUS_LABELS[s]}</option>
-          ))}
-        </select>
-      </div>
+      {showMap && (
+        <div className="mt-3">
+          <iframe
+            title={`Hartă ${lead.name}`}
+            src={mapEmbedSrc(lead)}
+            loading="lazy"
+            className="w-full h-64 rounded-lg border border-white/10"
+            referrerPolicy="no-referrer-when-downgrade"
+          />
+          {lead.mapsUri && (
+            <a
+              href={lead.mapsUri}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-block mt-2 text-xs text-sky-300 hover:underline"
+            >
+              Deschide în Google Maps ↗
+            </a>
+          )}
+        </div>
+      )}
     </div>
   );
 }

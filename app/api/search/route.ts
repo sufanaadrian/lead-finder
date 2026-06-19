@@ -20,6 +20,7 @@ const FIELD_MASK = [
   "places.userRatingCount",
   "places.photos",
   "places.googleMapsUri",
+  "places.location",
   "nextPageToken",
 ].join(",");
 
@@ -34,6 +35,7 @@ type GooglePlace = {
   userRatingCount?: number;
   photos?: unknown[];
   googleMapsUri?: string;
+  location?: { latitude?: number; longitude?: number };
 };
 
 function normalize(p: GooglePlace): Lead {
@@ -49,6 +51,8 @@ function normalize(p: GooglePlace): Lead {
     reviewCount: p.userRatingCount ?? 0,
     photoCount: Array.isArray(p.photos) ? p.photos.length : 0,
     mapsUri: p.googleMapsUri || "",
+    lat: p.location?.latitude,
+    lng: p.location?.longitude,
   };
 }
 

@@ -11,6 +11,8 @@ export type Lead = {
   reviewCount: number;
   photoCount: number;
   mapsUri: string;
+  lat?: number;
+  lng?: number;
 };
 
 export type LeadStatus = "new" | "contacted" | "client" | "skip";
