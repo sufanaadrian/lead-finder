@@ -52,43 +52,21 @@ function normalize(p: GooglePlace): Lead {
   };
 }
 
-export async function POST(req: Request) {
-  const apiKey = process.env.GOOGLE_PLACES_API_KEY;
-  if (!apiKey) {
-    return Response.json(
-      { error: "Lipsește GOOGLE_PLACES_API_KEY. Vezi README.md → Setup." },
-      { status: 500 }
-    );
-  }
-
-  let body: { term?: string; location?: string; pages?: number };
-  try {
-    body = await req.json();
-  } catch {
-    return Response.json({ error: "Cerere invalidă." }, { status: 400 });
-  }
-
-  const term = (body.term || "").trim();
-  const location = (body.location || "").trim();
-  if (!term || !location) {
-    return Response.json(
-      { error: "Completează atât tipul (ex: pensiune), cât și zona (ex: Brașov)." },
-      { status: 400 }
-    );
-  }
-
-  const textQuery = `${term} ${location}`;
-  // Each page is up to 20 results & costs 1 request; Google caps Text Search at 60.
-  const maxPages = Math.min(Math.max(body.pages ?? 3, 1), 3);
-
-  const found: Lead[] = [];
-  const seen = new Set<string>();
+// Runs a single text query, paginating up to `maxPages`. Never throws — returns
+// the leads found, how many requests it cost, and an error string if any.
+async function searchOneTerm(
+  textQuery: string,
+  maxPages: number,
+  apiKey: string
+): Promise<{ leads: Lead[]; requests: number; error?: string }> {
+  const leads: Lead[] = [];
   let pageToken: string | undefined;
-  let requestsUsed = 0;
+  let requests = 0;
 
-  try {
-    for (let page = 0; page < maxPages; page++) {
-      const res = await fetch(SEARCH_URL, {
+  for (let page = 0; page < maxPages; page++) {
+    let res: Response;
+    try {
+      res = await fetch(SEARCH_URL, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -102,39 +80,92 @@ export async function POST(req: Request) {
           ...(pageToken ? { pageToken } : {}),
         }),
       });
-      requestsUsed++;
-
-      if (!res.ok) {
-        const detail = await res.text();
-        if (requestsUsed > 0) recordUsage(requestsUsed);
-        return Response.json(
-          { error: `Eroare de la Google (${res.status}). ${detail.slice(0, 300)}` },
-          { status: 502 }
-        );
-      }
-
-      const data: { places?: GooglePlace[]; nextPageToken?: string } = await res.json();
-      for (const p of data.places || []) {
-        const lead = normalize(p);
-        if (seen.has(lead.id)) continue;
-        seen.add(lead.id);
-        found.push(lead);
-      }
-
-      pageToken = data.nextPageToken;
-      if (!pageToken) break;
-      // The next page token needs a brief moment to become valid.
-      await new Promise((r) => setTimeout(r, 1500));
+    } catch (err) {
+      return { leads, requests, error: `Eroare de rețea: ${String(err)}` };
     }
-  } catch (err) {
-    if (requestsUsed > 0) recordUsage(requestsUsed);
-    return Response.json({ error: `Eroare de rețea: ${String(err)}` }, { status: 502 });
+    requests++;
+
+    if (!res.ok) {
+      const detail = await res.text();
+      return { leads, requests, error: `Eroare de la Google (${res.status}). ${detail.slice(0, 200)}` };
+    }
+
+    const data: { places?: GooglePlace[]; nextPageToken?: string } = await res.json();
+    for (const p of data.places || []) leads.push(normalize(p));
+
+    pageToken = data.nextPageToken;
+    if (!pageToken) break;
+    // The next page token needs a brief moment to become valid.
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+
+  return { leads, requests };
+}
+
+export async function POST(req: Request) {
+  const apiKey = process.env.GOOGLE_PLACES_API_KEY;
+  if (!apiKey) {
+    return Response.json(
+      { error: "Lipsește GOOGLE_PLACES_API_KEY. Vezi README.md → Setup." },
+      { status: 500 }
+    );
+  }
+
+  let body: { terms?: string[]; term?: string; location?: string; pages?: number };
+  try {
+    body = await req.json();
+  } catch {
+    return Response.json({ error: "Cerere invalidă." }, { status: 400 });
+  }
+
+  // Accept a list of types; fall back to the single `term` for compatibility.
+  const rawTerms = body.terms ?? (body.term ? [body.term] : []);
+  const terms = Array.from(
+    new Set(rawTerms.map((t) => (t || "").trim()).filter(Boolean))
+  );
+  const location = (body.location || "").trim();
+  if (terms.length === 0 || !location) {
+    return Response.json(
+      { error: "Alege cel puțin un tip (ex: pensiune) și o zonă (ex: Brașov)." },
+      { status: 400 }
+    );
+  }
+
+  // Each page is up to 20 results & costs 1 request; Google caps Text Search at 60.
+  const maxPages = Math.min(Math.max(body.pages ?? 3, 1), 3);
+
+  // Run each type's query in parallel; pages within a query stay sequential
+  // (each page needs the previous page's token).
+  const settled = await Promise.all(
+    terms.map((t) => searchOneTerm(`${t} ${location}`, maxPages, apiKey))
+  );
+
+  // Merge + dedup across all types by stable place id.
+  const found: Lead[] = [];
+  const seen = new Set<string>();
+  let requestsUsed = 0;
+  let firstError = "";
+  for (const r of settled) {
+    requestsUsed += r.requests;
+    if (r.error && !firstError) firstError = r.error;
+    for (const lead of r.leads) {
+      if (seen.has(lead.id)) continue;
+      seen.add(lead.id);
+      found.push(lead);
+    }
+  }
+
+  const usageToday = recordUsage(requestsUsed);
+
+  // If everything failed, surface the error. If only some failed, keep going
+  // with whatever we got (and pass the error along as a soft warning).
+  if (firstError && found.length === 0) {
+    return Response.json({ error: firstError, usageToday }, { status: 502 });
   }
 
   // Snapshot which results we already had BEFORE saving this batch.
   const existing = getExistingStatuses(found.map((l) => l.id));
-  const usageToday = recordUsage(requestsUsed);
-  upsertLeads(found, textQuery);
+  upsertLeads(found, terms.join(", ") + " — " + location);
 
   const results: SearchResult[] = found.map((l) => ({
     ...l,
@@ -144,8 +175,9 @@ export async function POST(req: Request) {
 
   return Response.json({
     results,
-    query: textQuery,
+    query: `${terms.join(", ")} — ${location}`,
     requestsUsed,
     usageToday,
+    warning: firstError || undefined,
   });
 }

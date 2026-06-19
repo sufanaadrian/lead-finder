@@ -4,7 +4,16 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { LeadStatus, SearchResult, StoredLead } from "@/lib/types";
 import { STATUS_LABELS } from "@/lib/types";
 
-const TERM_CHIPS = ["pensiune", "cabană", "hotel", "vilă", "casă de vacanță"];
+const TYPE_OPTIONS = [
+  "pensiune",
+  "cabană",
+  "casă de vacanță",
+  "hotel",
+  "vilă",
+  "motel",
+  "hostel",
+  "camping",
+];
 
 const DEPTHS = [
   { label: "Rapid (20)", pages: 1 },
@@ -104,11 +113,13 @@ function TabBtn({ active, onClick, children }: { active: boolean; onClick: () =>
 /* ---------------------------------------------------------------- Search tab */
 
 function SearchTab({ template, onUsage }: { template: string; onUsage: (n: number) => void }) {
-  const [term, setTerm] = useState("pensiune");
+  const [types, setTypes] = useState<string[]>(["pensiune"]);
+  const [customType, setCustomType] = useState("");
   const [location, setLocation] = useState("");
   const [pages, setPages] = useState(3);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [warning, setWarning] = useState("");
   const [results, setResults] = useState<SearchResult[] | null>(null);
   const [query, setQuery] = useState("");
   const [lastUsed, setLastUsed] = useState<number | null>(null);
@@ -117,14 +128,27 @@ function SearchTab({ template, onUsage }: { template: string; onUsage: (n: numbe
   const [requirePhone, setRequirePhone] = useState(true);
   const [requireReviews, setRequireReviews] = useState(false);
   const [requirePhotos, setRequirePhotos] = useState(false);
-  const [hideKnown, setHideKnown] = useState(false);
+  // On by default: never show places already in the database.
+  const [hideKnown, setHideKnown] = useState(true);
 
   // Per-row local status overrides so the badge updates instantly on action.
   const [overrides, setOverrides] = useState<Record<string, LeadStatus>>({});
 
+  function toggleType(t: string) {
+    setTypes((cur) => (cur.includes(t) ? cur.filter((x) => x !== t) : [...cur, t]));
+  }
+  function addCustomType() {
+    const t = customType.trim().toLowerCase();
+    if (t && !types.includes(t)) setTypes((cur) => [...cur, t]);
+    setCustomType("");
+  }
+
+  const estRequests = types.length * pages;
+
   async function search(e: React.FormEvent) {
     e.preventDefault();
     setError("");
+    setWarning("");
     setLoading(true);
     setResults(null);
     setOverrides({});
@@ -132,15 +156,17 @@ function SearchTab({ template, onUsage }: { template: string; onUsage: (n: numbe
       const res = await fetch("/api/search", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ term, location, pages }),
+        body: JSON.stringify({ terms: types, location, pages }),
       });
       const data = await res.json();
       if (!res.ok) {
         setError(data.error || "A apărut o eroare.");
+        if (data.usageToday !== undefined) onUsage(data.usageToday);
       } else {
         setResults(data.results);
         setQuery(data.query);
         setLastUsed(data.requestsUsed);
+        setWarning(data.warning || "");
         onUsage(data.usageToday);
       }
     } catch (err) {
@@ -153,24 +179,66 @@ function SearchTab({ template, onUsage }: { template: string; onUsage: (n: numbe
   const filtered = useMemo(() => {
     if (!results) return [];
     return results.filter((l) => {
+      if (hideKnown && l.known) return false;
       if (onlyNoWebsite && l.website) return false;
       if (requirePhone && !l.phone) return false;
       if (requireReviews && l.reviewCount <= 0) return false;
       if (requirePhotos && l.photoCount <= 0) return false;
-      if (hideKnown && l.known) return false;
       return true;
     });
-  }, [results, onlyNoWebsite, requirePhone, requireReviews, requirePhotos, hideKnown]);
+  }, [results, hideKnown, onlyNoWebsite, requirePhone, requireReviews, requirePhotos]);
+
+  const hiddenKnown = results ? results.filter((l) => l.known).length : 0;
 
   return (
     <>
       <form onSubmit={search} className="bg-white/[0.03] border border-white/10 rounded-2xl p-5 mb-5">
-        <div className="grid sm:grid-cols-[1fr_1.3fr_auto] gap-3">
-          <Field label="Ce caut">
+        {/* Property types — pick as many as you want */}
+        <Field label="Ce tipuri caut (poți alege mai multe)">
+          <div className="flex flex-wrap gap-2">
+            {TYPE_OPTIONS.map((t) => {
+              const on = types.includes(t);
+              return (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => toggleType(t)}
+                  className={`text-sm px-3 py-1.5 rounded-full border transition-colors ${
+                    on ? "bg-emerald-500/20 border-emerald-500/50 text-emerald-200" : "border-white/10 text-white/50 hover:text-white/80"
+                  }`}
+                >
+                  {on ? "✓ " : ""}{t}
+                </button>
+              );
+            })}
+            {/* Custom types added by the user */}
+            {types
+              .filter((t) => !TYPE_OPTIONS.includes(t))
+              .map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => toggleType(t)}
+                  className="text-sm px-3 py-1.5 rounded-full border bg-emerald-500/20 border-emerald-500/50 text-emerald-200"
+                >
+                  ✓ {t} ✕
+                </button>
+              ))}
+          </div>
+        </Field>
+
+        <div className="grid sm:grid-cols-[1fr_1.3fr_auto] gap-3 mt-4">
+          <Field label="Adaugă tip propriu">
             <input
-              value={term}
-              onChange={(e) => setTerm(e.target.value)}
-              placeholder="pensiune"
+              value={customType}
+              onChange={(e) => setCustomType(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  addCustomType();
+                }
+              }}
+              placeholder="ex: agroturism"
               className="w-full bg-black/30 border border-white/10 rounded-lg px-3 py-2.5 outline-none focus:border-white/30"
             />
           </Field>
@@ -185,7 +253,7 @@ function SearchTab({ template, onUsage }: { template: string; onUsage: (n: numbe
           <div className="flex items-end">
             <button
               type="submit"
-              disabled={loading}
+              disabled={loading || types.length === 0}
               className="w-full sm:w-auto h-[46px] px-6 rounded-lg bg-emerald-500 text-black font-semibold hover:bg-emerald-400 disabled:opacity-50 transition-colors"
             >
               {loading ? "Caut…" : "Caută"}
@@ -193,20 +261,8 @@ function SearchTab({ template, onUsage }: { template: string; onUsage: (n: numbe
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2 mt-3">
-          {TERM_CHIPS.map((c) => (
-            <button
-              key={c}
-              type="button"
-              onClick={() => setTerm(c)}
-              className={`text-xs px-3 py-1 rounded-full border transition-colors ${
-                term === c ? "bg-white/15 border-white/30 text-white" : "border-white/10 text-white/50 hover:text-white/80"
-              }`}
-            >
-              {c}
-            </button>
-          ))}
-          <span className="mx-1 text-white/15">|</span>
+        <div className="flex flex-wrap items-center gap-2 mt-4">
+          <span className="text-xs text-white/35 mr-1">Adâncime:</span>
           {DEPTHS.map((d) => (
             <button
               key={d.pages}
@@ -220,25 +276,33 @@ function SearchTab({ template, onUsage }: { template: string; onUsage: (n: numbe
               {d.label}
             </button>
           ))}
+          <span className="ml-auto text-xs text-white/35">
+            ≈ <strong className="text-white/60">{estRequests}</strong> {estRequests === 1 ? "cerere" : "cereri"} către Google
+          </span>
         </div>
       </form>
 
       <div className="flex flex-wrap gap-2.5 mb-5">
+        <Toggle on={hideKnown} onClick={() => setHideKnown((v) => !v)} label="Ascunde cele deja găsite" />
         <Toggle on={onlyNoWebsite} onClick={() => setOnlyNoWebsite((v) => !v)} label="Doar fără website" />
         <Toggle on={requirePhone} onClick={() => setRequirePhone((v) => !v)} label="Doar cu telefon" />
         <Toggle on={requireReviews} onClick={() => setRequireReviews((v) => !v)} label="Doar cu recenzii" />
         <Toggle on={requirePhotos} onClick={() => setRequirePhotos((v) => !v)} label="Doar cu poze" />
-        <Toggle on={hideKnown} onClick={() => setHideKnown((v) => !v)} label="Ascunde cele deja găsite" />
       </div>
 
       {error && (
         <div className="bg-red-500/10 border border-red-500/30 text-red-300 rounded-xl px-4 py-3 mb-5 text-sm">{error}</div>
       )}
+      {warning && (
+        <div className="bg-amber-500/10 border border-amber-500/30 text-amber-300 rounded-xl px-4 py-3 mb-5 text-sm">
+          Atenție: {warning}
+        </div>
+      )}
 
       {results && (
         <p className="text-sm text-white/50 mb-3">
-          <strong className="text-white">{filtered.length}</strong> rezultate
-          {results.length !== filtered.length && <span className="text-white/30"> (din {results.length} pentru „{query}”)</span>}
+          <strong className="text-white">{filtered.length}</strong> rezultate noi
+          {hideKnown && hiddenKnown > 0 && <span className="text-white/30"> ({hiddenKnown} deja salvate, ascunse)</span>}
           {lastUsed !== null && <span className="text-white/30"> · {lastUsed} {lastUsed === 1 ? "cerere" : "cereri"} folosite</span>}
         </p>
       )}
@@ -256,10 +320,14 @@ function SearchTab({ template, onUsage }: { template: string; onUsage: (n: numbe
       </div>
 
       {results && filtered.length === 0 && !error && (
-        <p className="text-white/40 text-center py-12">Niciun rezultat cu filtrele curente. Dezactivează câteva filtre.</p>
+        <p className="text-white/40 text-center py-12">
+          {hiddenKnown > 0 && filtered.length === 0
+            ? "Toate rezultatele erau deja salvate. Caută altă zonă sau alt tip."
+            : "Niciun rezultat nou cu filtrele curente. Dezactivează câteva filtre."}
+        </p>
       )}
       {!results && !loading && !error && (
-        <p className="text-white/30 text-center py-12">Introdu o zonă și apasă „Caută".</p>
+        <p className="text-white/30 text-center py-12">Alege tipurile, scrie o zonă și apasă „Caută".</p>
       )}
     </>
   );
