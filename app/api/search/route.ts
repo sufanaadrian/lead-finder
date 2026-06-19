@@ -21,8 +21,13 @@ const FIELD_MASK = [
   "places.photos",
   "places.googleMapsUri",
   "places.location",
+  "places.addressComponents",
+  "places.primaryType",
+  "places.primaryTypeDisplayName",
   "nextPageToken",
 ].join(",");
+
+type AddressComponent = { longText?: string; shortText?: string; types?: string[] };
 
 type GooglePlace = {
   id?: string;
@@ -36,14 +41,22 @@ type GooglePlace = {
   photos?: { name?: string }[];
   googleMapsUri?: string;
   location?: { latitude?: number; longitude?: number };
+  addressComponents?: AddressComponent[];
+  primaryType?: string;
+  primaryTypeDisplayName?: { text?: string };
 };
+
+function pickComponent(components: AddressComponent[] | undefined, type: string): string {
+  const c = (components || []).find((x) => x.types?.includes(type));
+  return c?.longText || c?.shortText || "";
+}
 
 function normalize(p: GooglePlace): Lead {
   const intl = p.internationalPhoneNumber || "";
-  const photos = (Array.isArray(p.photos) ? p.photos : [])
-    .map((ph) => ph?.name)
-    .filter((n): n is string => !!n)
-    .slice(0, 10); // cap stored references; we only display a handful
+  const locality =
+    pickComponent(p.addressComponents, "locality") ||
+    pickComponent(p.addressComponents, "administrative_area_level_2") ||
+    pickComponent(p.addressComponents, "postal_town");
   return {
     id: p.id || crypto.randomUUID(),
     name: p.displayName?.text || "(fără nume)",
@@ -53,11 +66,14 @@ function normalize(p: GooglePlace): Lead {
     website: p.websiteUri || "",
     rating: p.rating ?? 0,
     reviewCount: p.userRatingCount ?? 0,
-    photoCount: photos.length,
-    photos,
+    photoCount: Array.isArray(p.photos) ? p.photos.length : 0,
     mapsUri: p.googleMapsUri || "",
     lat: p.location?.latitude,
     lng: p.location?.longitude,
+    locality,
+    county: pickComponent(p.addressComponents, "administrative_area_level_1"),
+    primaryType: p.primaryType || "",
+    typeLabel: p.primaryTypeDisplayName?.text || "",
   };
 }
 

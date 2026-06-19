@@ -9,7 +9,10 @@ Folosește **Google Places API (New)**, aceeași sursă de date pe care o vezi �
 - Caută după tip (pensiune, cabană, hotel…) + zonă scrisă SAU o **zonă aleasă pe hartă** (apeși un punct + rază în km, ex: 15 km în jurul Brașovului acoperă Moieciu, Poiana Brașov etc.)
 - Afișează pentru fiecare loc: nume, telefon, adresă, nr. recenzii, nr. poze, dacă are website, link Google Maps
 - Buton **„Detalii"** care deschide, în pagină, poze + telefon + website + recenzii + hartă — fără să mai schimbi tab-ul
-- Buton **WhatsApp** cu mesaj pre-completat (editabil, cu `{nume}` înlocuit automat) — la apăsare marchează lead-ul „Contactat"
+- Buton **WhatsApp** care deschide direct **aplicația** (nu tab-ul web) cu mesaj pre-completat (editabil, cu `{nume}` înlocuit automat) — la apăsare marchează lead-ul „Contactat"
+- **★ De contactat** — pune un lead pe o listă scurtă pentru follow-up în masă mai târziu
+- **Filtru pe zonă** (județ → localitate) în tab-ul Salvate, ca filtru principal
+- Când marchezi un lead (contactat/ignorat), **dispare din listă** ca să rămână doar ce ai de făcut
 - **Bază de date locală** care reține tot ce ai găsit (`data/db.json`) — nu mai scrii pe nimeni de două ori
 - Status pentru fiecare lead: Nou / Contactat / Client / Ignorat, + notițe
 - Filtre (toggle): doar fără website · doar cu telefon · doar cu recenzii · doar cu poze · ascunde cele deja găsite

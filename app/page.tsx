@@ -143,6 +143,9 @@ function SearchTab({ template, onUsage }: { template: string; onUsage: (n: numbe
 
   // Per-row local status overrides so the badge updates instantly on action.
   const [overrides, setOverrides] = useState<Record<string, LeadStatus>>({});
+  // Once a lead is handled (contacted/skip/client), drop it from the list so
+  // you're always looking at what's left to do.
+  const [dismissed, setDismissed] = useState<Set<string>>(new Set());
 
   function toggleType(t: string) {
     setTypes((cur) => (cur.includes(t) ? cur.filter((x) => x !== t) : [...cur, t]));
@@ -201,6 +204,7 @@ function SearchTab({ template, onUsage }: { template: string; onUsage: (n: numbe
   const filtered = useMemo(() => {
     if (!results) return [];
     return results.filter((l) => {
+      if (dismissed.has(l.id)) return false;
       if (hideKnown && l.known) return false;
       if (onlyNoWebsite && l.website) return false;
       if (requirePhone && !l.phone) return false;
@@ -208,7 +212,13 @@ function SearchTab({ template, onUsage }: { template: string; onUsage: (n: numbe
       if (requirePhotos && l.photoCount <= 0) return false;
       return true;
     });
-  }, [results, hideKnown, onlyNoWebsite, requirePhone, requireReviews, requirePhotos]);
+  }, [results, dismissed, hideKnown, onlyNoWebsite, requirePhone, requireReviews, requirePhotos]);
+
+  // Mark a lead handled and remove it from view (contacted/skip/client).
+  function handleStatus(id: string, s: LeadStatus) {
+    setOverrides((o) => ({ ...o, [id]: s }));
+    if (s !== "new") setDismissed((d) => new Set(d).add(id));
+  }
 
   const hiddenKnown = results ? results.filter((l) => l.known).length : 0;
 
@@ -325,7 +335,6 @@ function SearchTab({ template, onUsage }: { template: string; onUsage: (n: numbe
             {loading ? "Caut…" : "Caută"}
           </button>
           <span className="text-xs text-white/35 ml-2 mr-1">Adâncime:</span>
-          <span className="text-xs text-white/35 mr-1">Adâncime:</span>
           {DEPTHS.map((d) => (
             <button
               key={d.pages}
@@ -380,7 +389,7 @@ function SearchTab({ template, onUsage }: { template: string; onUsage: (n: numbe
             lead={{ ...l, status: overrides[l.id] ?? l.status }}
             known={l.known}
             template={template}
-            onStatus={(s) => setOverrides((o) => ({ ...o, [l.id]: s }))}
+            onStatus={(s) => handleStatus(l.id, s)}
           />
         ))}
       </div>
@@ -412,6 +421,9 @@ function SavedTab({
 }) {
   const [leads, setLeads] = useState<StoredLead[] | null>(null);
   const [statusFilter, setStatusFilter] = useState<LeadStatus | "all">("all");
+  const [countyFilter, setCountyFilter] = useState<string>("all");
+  const [localityFilter, setLocalityFilter] = useState<string>("all");
+  const [interestedOnly, setInterestedOnly] = useState(false);
   const [showTemplate, setShowTemplate] = useState(false);
 
   const load = useCallback(async () => {
@@ -423,17 +435,40 @@ function SavedTab({
     load();
   }, [load]);
 
+  // Distinct counties, and localities within the chosen county, for the area filter.
+  const counties = useMemo(() => {
+    const set = new Set<string>();
+    for (const l of leads ?? []) if (l.county) set.add(l.county);
+    return Array.from(set).sort();
+  }, [leads]);
+
+  const localities = useMemo(() => {
+    const set = new Set<string>();
+    for (const l of leads ?? []) {
+      if (!l.locality) continue;
+      if (countyFilter !== "all" && l.county !== countyFilter) continue;
+      set.add(l.locality);
+    }
+    return Array.from(set).sort();
+  }, [leads, countyFilter]);
+
   const filtered = useMemo(() => {
     if (!leads) return [];
-    return statusFilter === "all" ? leads : leads.filter((l) => l.status === statusFilter);
-  }, [leads, statusFilter]);
+    return leads.filter((l) => {
+      if (statusFilter !== "all" && l.status !== statusFilter) return false;
+      if (countyFilter !== "all" && l.county !== countyFilter) return false;
+      if (localityFilter !== "all" && l.locality !== localityFilter) return false;
+      if (interestedOnly && !l.interested) return false;
+      return true;
+    });
+  }, [leads, statusFilter, countyFilter, localityFilter, interestedOnly]);
 
   function exportCsv() {
     const rows = [
-      ["Nume", "Telefon", "Adresă", "Status", "Recenzii", "Poze", "Website", "Notă", "Google Maps"],
+      ["Nume", "Telefon", "Localitate", "Județ", "Adresă", "Status", "Interesat", "Recenzii", "Website", "Notă", "Google Maps"],
       ...filtered.map((l) => [
-        l.name, l.phone, l.address, STATUS_LABELS[l.status],
-        String(l.reviewCount), String(l.photoCount), l.website || "—", l.note || "", l.mapsUri,
+        l.name, l.phone, l.locality || "", l.county || "", l.address, STATUS_LABELS[l.status],
+        l.interested ? "da" : "", String(l.reviewCount), l.website || "—", l.note || "", l.mapsUri,
       ]),
     ];
     const csv = rows.map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
@@ -447,20 +482,57 @@ function SavedTab({
   }
 
   const counts = useMemo(() => {
-    const c: Record<string, number> = { all: leads?.length ?? 0 };
-    for (const l of leads ?? []) c[l.status] = (c[l.status] ?? 0) + 1;
+    const c: Record<string, number> = { all: leads?.length ?? 0, interested: 0 };
+    for (const l of leads ?? []) {
+      c[l.status] = (c[l.status] ?? 0) + 1;
+      if (l.interested) c.interested += 1;
+    }
     return c;
   }, [leads]);
 
   return (
     <>
+      {/* MAIN filter: location (county → locality) */}
+      <div className="bg-white/[0.03] border border-white/10 rounded-xl p-4 mb-4">
+        <p className="text-xs text-white/40 mb-2">📍 Filtru pe zonă</p>
+        <div className="flex flex-wrap gap-2 items-center">
+          <select
+            value={countyFilter}
+            onChange={(e) => { setCountyFilter(e.target.value); setLocalityFilter("all"); }}
+            className="px-3 py-2 rounded-lg border border-white/15 bg-black/40 text-sm text-white/80 outline-none"
+          >
+            <option value="all" className="bg-zinc-900">Toate județele</option>
+            {counties.map((c) => <option key={c} value={c} className="bg-zinc-900">{c}</option>)}
+          </select>
+          <select
+            value={localityFilter}
+            onChange={(e) => setLocalityFilter(e.target.value)}
+            className="px-3 py-2 rounded-lg border border-white/15 bg-black/40 text-sm text-white/80 outline-none"
+          >
+            <option value="all" className="bg-zinc-900">Toate localitățile</option>
+            {localities.map((c) => <option key={c} value={c} className="bg-zinc-900">{c}</option>)}
+          </select>
+          {(countyFilter !== "all" || localityFilter !== "all") && (
+            <button
+              onClick={() => { setCountyFilter("all"); setLocalityFilter("all"); }}
+              className="text-xs text-white/40 hover:text-white/70 px-2 py-2"
+            >
+              ✕ resetează zona
+            </button>
+          )}
+        </div>
+      </div>
+
       <div className="flex items-center justify-between gap-3 mb-4 flex-wrap">
         <div className="flex flex-wrap gap-2">
-          <FilterPill active={statusFilter === "all"} onClick={() => setStatusFilter("all")}>
+          <FilterPill active={statusFilter === "all" && !interestedOnly} onClick={() => { setStatusFilter("all"); setInterestedOnly(false); }}>
             Toate ({counts.all ?? 0})
           </FilterPill>
+          <FilterPill active={interestedOnly} onClick={() => { setInterestedOnly((v) => !v); }}>
+            ★ De contactat ({counts.interested ?? 0})
+          </FilterPill>
           {(["new", "contacted", "client", "skip"] as LeadStatus[]).map((s) => (
-            <FilterPill key={s} active={statusFilter === s} onClick={() => setStatusFilter(s)}>
+            <FilterPill key={s} active={statusFilter === s && !interestedOnly} onClick={() => { setStatusFilter(s); setInterestedOnly(false); }}>
               {STATUS_LABELS[s]} ({counts[s] ?? 0})
             </FilterPill>
           ))}
@@ -491,6 +563,8 @@ function SavedTab({
         </div>
       )}
 
+      <p className="text-sm text-white/40 mb-3">{filtered.length} {filtered.length === 1 ? "rezultat" : "rezultate"}</p>
+
       <div className="flex flex-col gap-2.5">
         {filtered.map((l) => (
           <LeadCard
@@ -498,16 +572,14 @@ function SavedTab({
             lead={l}
             known={false}
             template={template}
-            onStatus={() => {
-              load();
-              onChanged();
-            }}
+            onStatus={() => { load(); onChanged(); }}
+            onInterested={() => { load(); }}
           />
         ))}
       </div>
 
       {leads && filtered.length === 0 && (
-        <p className="text-white/40 text-center py-12">Nimic aici încă. Caută în tab-ul „Căutare".</p>
+        <p className="text-white/40 text-center py-12">Nimic aici cu filtrele curente.</p>
       )}
     </>
   );
@@ -570,41 +642,70 @@ function mapEmbedSrc(lead: { name: string; address: string; lat?: number; lng?: 
   return `https://maps.google.com/maps?q=${encodeURIComponent(`${lead.name} ${lead.address}`)}&z=15&output=embed`;
 }
 
+type CardLead = {
+  id: string; name: string; address: string; phone: string; whatsapp: string; website: string;
+  rating: number; reviewCount: number; photoCount: number; mapsUri: string; status: LeadStatus;
+  lat?: number; lng?: number; locality?: string; county?: string; typeLabel?: string; primaryType?: string;
+  interested?: boolean;
+};
+
 function LeadCard({
   lead,
   known,
   template,
   onStatus,
+  onInterested,
 }: {
-  lead: { id: string; name: string; address: string; phone: string; whatsapp: string; website: string; rating: number; reviewCount: number; photoCount: number; photos?: string[]; mapsUri: string; status: LeadStatus; lat?: number; lng?: number };
+  lead: CardLead;
   known: boolean;
   template: string;
   onStatus: (s: LeadStatus) => void;
+  onInterested?: (v: boolean) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const [interested, setInterested] = useState(!!lead.interested);
 
-  async function setStatus(status: LeadStatus) {
-    onStatus(status);
+  async function patch(body: Record<string, unknown>) {
     try {
       await fetch("/api/leads", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: lead.id, status }),
+        body: JSON.stringify({ id: lead.id, ...body }),
       });
     } catch {}
   }
 
-  function openWhatsApp() {
-    const text = encodeURIComponent(template.replaceAll("{nume}", lead.name));
-    window.open(`https://wa.me/${lead.whatsapp}?text=${text}`, "_blank", "noopener,noreferrer");
-    if (lead.status === "new") setStatus("contacted");
+  function setStatus(status: LeadStatus) {
+    onStatus(status);
+    patch({ status });
   }
 
-  const photos = (lead.photos ?? []).slice(0, 6);
+  function toggleInterested() {
+    const v = !interested;
+    setInterested(v);
+    onInterested?.(v);
+    patch({ interested: v });
+  }
+
+  function openWhatsApp() {
+    const text = encodeURIComponent(template.replaceAll("{nume}", lead.name));
+    // Open the native WhatsApp app directly (no web tab). On a Mac with the
+    // app installed this jumps straight into the chat.
+    window.location.href = `whatsapp://send?phone=${lead.whatsapp}&text=${text}`;
+    if (lead.status === "new") setStatus("contacted");
+  }
 
   return (
     <div className={`bg-white/[0.03] border rounded-xl p-4 transition-colors ${expanded ? "border-white/25" : "border-white/10"}`}>
       <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+        <button
+          onClick={toggleInterested}
+          title={interested ? "Scoate din listă" : "Adaugă la lista de contactat"}
+          className={`text-xl leading-none shrink-0 transition-colors ${interested ? "text-amber-400" : "text-white/20 hover:text-white/50"}`}
+        >
+          {interested ? "★" : "☆"}
+        </button>
+
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <h3 className="font-semibold truncate">{lead.name}</h3>
@@ -616,11 +717,17 @@ function LeadCard({
             ) : (
               <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">fără website</span>
             )}
+            {lead.typeLabel && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/8 text-white/55 border border-white/15">{lead.typeLabel}</span>
+            )}
             {known && (
               <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/10 text-white/50 border border-white/15">deja salvat</span>
             )}
           </div>
-          <p className="text-sm text-white/45 truncate">{lead.address}</p>
+          <p className="text-sm text-white/45 truncate">
+            {lead.locality ? <span className="text-white/60">{lead.locality}</span> : null}
+            {lead.locality ? " · " : ""}{lead.address}
+          </p>
           <div className="flex items-center gap-3 text-xs text-white/40 mt-1">
             {lead.phone ? <span>📞 {lead.phone}</span> : <span className="text-white/25">fără telefon</span>}
             <span>⭐ {lead.rating || "—"} ({lead.reviewCount})</span>
@@ -657,25 +764,8 @@ function LeadCard({
 
       {expanded && (
         <div className="mt-4 pt-4 border-t border-white/10 grid md:grid-cols-2 gap-4">
-          {/* Left: photos + facts */}
+          {/* Left: facts */}
           <div className="flex flex-col gap-3">
-            {photos.length > 0 ? (
-              <div className="grid grid-cols-3 gap-1.5">
-                {photos.map((name) => (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    key={name}
-                    src={`/api/photo?name=${encodeURIComponent(name)}&w=400`}
-                    alt={lead.name}
-                    loading="lazy"
-                    className="w-full h-24 object-cover rounded-md bg-white/5"
-                  />
-                ))}
-              </div>
-            ) : (
-              <p className="text-xs text-white/30">Fără poze disponibile.</p>
-            )}
-
             <dl className="text-sm flex flex-col gap-1.5">
               <Detail label="Telefon">
                 {lead.phone ? (
@@ -691,16 +781,27 @@ function LeadCard({
                   <span className="text-emerald-300">nu are</span>
                 )}
               </Detail>
+              <Detail label="Tip">
+                <span className="text-white/70">{lead.typeLabel || lead.primaryType || "—"}</span>
+              </Detail>
               <Detail label="Recenzii">
                 <span className="text-white/70">⭐ {lead.rating || "—"} · {lead.reviewCount} recenzii</span>
+              </Detail>
+              <Detail label="Localitate">
+                <span className="text-white/70">{[lead.locality, lead.county].filter(Boolean).join(", ") || "—"}</span>
               </Detail>
               <Detail label="Adresă">
                 <span className="text-white/70">{lead.address || "—"}</span>
               </Detail>
             </dl>
+            {lead.mapsUri && (
+              <a href={lead.mapsUri} target="_blank" rel="noopener noreferrer" className="text-sm text-sky-300 hover:underline">
+                Vezi poze și detalii pe Google Maps ↗
+              </a>
+            )}
           </div>
 
-          {/* Right: map */}
+          {/* Right: free keyless map */}
           <div className="flex flex-col">
             <iframe
               title={`Hartă ${lead.name}`}
@@ -709,11 +810,6 @@ function LeadCard({
               className="w-full h-56 md:h-full min-h-56 rounded-lg border border-white/10"
               referrerPolicy="no-referrer-when-downgrade"
             />
-            {lead.mapsUri && (
-              <a href={lead.mapsUri} target="_blank" rel="noopener noreferrer" className="mt-2 text-xs text-sky-300 hover:underline">
-                Deschide în Google Maps ↗
-              </a>
-            )}
           </div>
         </div>
       )}

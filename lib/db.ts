@@ -60,11 +60,18 @@ export function upsertLeads(leads: Lead[], query: string): Record<string, Stored
   for (const lead of leads) {
     const existing = db.leads[lead.id];
     if (existing) {
-      db.leads[lead.id] = { ...existing, ...lead, status: existing.status, note: existing.note };
+      db.leads[lead.id] = {
+        ...existing,
+        ...lead,
+        status: existing.status,
+        interested: existing.interested ?? false,
+        note: existing.note,
+      };
     } else {
       db.leads[lead.id] = {
         ...lead,
         status: "new",
+        interested: false,
         note: "",
         savedAt: now,
         firstQuery: query,
@@ -94,7 +101,7 @@ export function getExistingStatuses(ids: string[]): Record<string, LeadStatus> {
 // it moves to "contacted".
 export function updateLead(
   id: string,
-  patch: { status?: LeadStatus; note?: string }
+  patch: { status?: LeadStatus; note?: string; interested?: boolean }
 ): StoredLead | null {
   const db = readDb();
   const lead = db.leads[id];
@@ -106,6 +113,7 @@ export function updateLead(
     }
   }
   if (patch.note !== undefined) lead.note = patch.note;
+  if (patch.interested !== undefined) lead.interested = patch.interested;
   db.leads[id] = lead;
   writeDb(db);
   return lead;

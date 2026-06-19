@@ -12,7 +12,7 @@ export async function GET() {
 }
 
 export async function PATCH(req: Request) {
-  let body: { id?: string; status?: LeadStatus; note?: string };
+  let body: { id?: string; status?: LeadStatus; note?: string; interested?: boolean };
   try {
     body = await req.json();
   } catch {
@@ -26,7 +26,11 @@ export async function PATCH(req: Request) {
     return Response.json({ error: "Status invalid." }, { status: 400 });
   }
 
-  const updated = updateLead(body.id, { status: body.status, note: body.note });
+  const updated = updateLead(body.id, {
+    status: body.status,
+    note: body.note,
+    interested: body.interested,
+  });
   if (!updated) {
     return Response.json({ error: "Lead inexistent." }, { status: 404 });
   }

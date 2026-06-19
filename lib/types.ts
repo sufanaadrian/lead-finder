@@ -10,10 +10,13 @@ export type Lead = {
   rating: number;
   reviewCount: number;
   photoCount: number;
-  photos?: string[]; // Google photo resource names ("places/<id>/photos/<ref>")
   mapsUri: string;
   lat?: number;
   lng?: number;
+  locality?: string; // city / commune
+  county?: string; // județ
+  primaryType?: string; // raw Google type, e.g. "guest_house"
+  typeLabel?: string; // localized label, e.g. "Pensiune"
 };
 
 export type LeadStatus = "new" | "contacted" | "client" | "skip";
@@ -28,6 +31,7 @@ export const STATUS_LABELS: Record<LeadStatus, string> = {
 // A lead as kept in the local database — the scraped data plus our own notes.
 export type StoredLead = Lead & {
   status: LeadStatus;
+  interested: boolean; // shortlist flag for bulk follow-up
   note: string;
   savedAt: string;
   contactedAt?: string;
