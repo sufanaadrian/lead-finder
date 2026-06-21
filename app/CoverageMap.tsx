@@ -3,36 +3,15 @@
 // Coverage heatmap (free, OpenStreetMap + Leaflet, no Google key):
 //  - a heat layer over every place you've found (shows density / coverage)
 //  - shaded shapes for the zones you actually searched:
-//      • a circle for each "pick on map" area search
-//      • a rectangle for each typed search, sized to its results' extent
-//        (so searching a whole city shades roughly the whole city)
+//      • a circle for each "pick on map" area search (now also used for
+//        geocoded typed-location searches, see app/api/search/route.ts)
+//      • a rectangle for the rare fallback search with no resolved area
 
 import "leaflet/dist/leaflet.css";
-import { useEffect } from "react";
-import L from "leaflet";
-import "leaflet.heat";
-import { MapContainer, TileLayer, Circle, Rectangle, useMap } from "react-leaflet";
+import { MapContainer, TileLayer, Circle, Rectangle } from "react-leaflet";
+import { HeatLayer, type HeatPoint, type AreaCircle, type AreaRect } from "./HeatLayer";
 
-export type HeatPoint = { lat: number; lng: number };
-export type AreaCircle = { lat: number; lng: number; radiusKm: number };
-export type AreaRect = { minLat: number; maxLat: number; minLng: number; maxLng: number };
-
-function HeatLayer({ points }: { points: HeatPoint[] }) {
-  const map = useMap();
-  useEffect(() => {
-    if (!points.length) return;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const layer = (L as any).heatLayer(
-      points.map((p) => [p.lat, p.lng, 0.7]),
-      { radius: 28, blur: 22, maxZoom: 12, gradient: { 0.3: "#22d3ee", 0.6: "#3b82f6", 1: "#a855f7" } }
-    );
-    layer.addTo(map);
-    return () => {
-      map.removeLayer(layer);
-    };
-  }, [map, points]);
-  return null;
-}
+export type { HeatPoint, AreaCircle, AreaRect };
 
 export default function CoverageMap({
   points,

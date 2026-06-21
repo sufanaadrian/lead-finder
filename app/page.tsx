@@ -42,6 +42,18 @@ function sortLeads<T extends { website: string; phone: string; reviewCount: numb
   }
 }
 
+// Coverage data (heat points + searched zones) shared by the dashboard's
+// coverage map and the live search map, so picking a new area shows where
+// you've already looked.
+function computeCoverage(leads: { lat?: number; lng?: number }[], searches: SearchRecord[]) {
+  const points = leads
+    .filter((l) => typeof l.lat === "number" && typeof l.lng === "number")
+    .map((l) => ({ lat: l.lat as number, lng: l.lng as number }));
+  const circles = searches.filter((s) => s.area).map((s) => ({ lat: s.area!.lat, lng: s.area!.lng, radiusKm: s.area!.radiusKm }));
+  const rects = searches.filter((s) => !s.area && s.bounds).map((s) => s.bounds!);
+  return { points, circles, rects };
+}
+
 const FOLLOWUP_DAYS = 3;
 
 // Opens the native WhatsApp app via the whatsapp:// scheme WITHOUT navigating
@@ -65,12 +77,18 @@ const TYPE_OPTIONS = [
   "motel",
   "hostel",
   "camping",
+  "a-frame",
+  "bungalow",
 ];
 
+// Pages of 20 results per zonă (tile). Google hard-caps a single query at 3
+// pages (60 results) — raising this past 3 wouldn't get more back. Coverage
+// beyond that comes from tiling large areas into many small zones server-side
+// (see app/api/search/route.ts), not from this number.
 const DEPTHS = [
-  { label: "Rapid (20)", pages: 1 },
-  { label: "Mediu (40)", pages: 2 },
-  { label: "Complet (60)", pages: 3 },
+  { label: "Rapid", pages: 1 },
+  { label: "Mediu", pages: 2 },
+  { label: "Complet", pages: 3 },
 ];
 
 const DEFAULT_TEMPLATE =
@@ -170,13 +188,34 @@ function SearchTab({ template, onUsage }: { template: string; onUsage: (n: numbe
   const [areaMode, setAreaMode] = useState<"text" | "map">("text");
   const [center, setCenter] = useState<{ lat: number; lng: number } | null>(null);
   const [radiusKm, setRadiusKm] = useState(10);
-  const [pages, setPages] = useState(3);
+  // Pages per zonă (tile), not an overall cap — large areas are split into
+  // many zones server-side, so total coverage isn't bounded by this number.
+  const [pages, setPages] = useState(1);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [warning, setWarning] = useState("");
   const [results, setResults] = useState<SearchResult[] | null>(null);
   const [query, setQuery] = useState("");
   const [lastUsed, setLastUsed] = useState<number | null>(null);
+  const [tilesUsed, setTilesUsed] = useState<number | null>(null);
+
+  // Heatmap of everything found so far + zones already searched, shown live
+  // on the area-picker map so you don't re-cover ground you've already done.
+  const [coverage, setCoverage] = useState<{
+    points: { lat: number; lng: number }[];
+    circles: { lat: number; lng: number; radiusKm: number }[];
+    rects: { minLat: number; maxLat: number; minLng: number; maxLng: number }[];
+  }>({ points: [], circles: [], rects: [] });
+  const loadCoverage = useCallback(async () => {
+    try {
+      const res = await fetch("/api/leads");
+      const data = await res.json();
+      setCoverage(computeCoverage(data.leads ?? [], data.searches ?? []));
+    } catch {}
+  }, []);
+  useEffect(() => {
+    loadCoverage();
+  }, [loadCoverage]);
 
   const [requirePhone, setRequirePhone] = useState(true);
   const [requireReviews, setRequireReviews] = useState(false);
@@ -200,8 +239,10 @@ function SearchTab({ template, onUsage }: { template: string; onUsage: (n: numbe
     setCustomType("");
   }
 
-  // In map mode we also run one category (Nearby) search.
-  const estRequests = types.length * pages + (areaMode === "map" ? 1 : 0);
+  // Minimum per zonă (tile): one category search plus each term's pages.
+  // Large areas are split into multiple zones server-side, so the real total
+  // (shown after the search as "cereri folosite") can be several times this.
+  const estRequestsPerZone = types.length * pages + 1;
 
   const useMap = areaMode === "map";
   const canSearch = types.length > 0 && (useMap ? !!center : location.trim().length > 0);
@@ -236,8 +277,10 @@ function SearchTab({ template, onUsage }: { template: string; onUsage: (n: numbe
         setResults(data.results);
         setQuery(data.query);
         setLastUsed(data.requestsUsed);
+        setTilesUsed(data.tilesUsed ?? null);
         setWarning(data.warning || "");
         onUsage(data.usageToday);
+        loadCoverage(); // results were just saved — refresh the heatmap
       }
     } catch (err) {
       setError(`Eroare de rețea: ${String(err)}`);
@@ -353,7 +396,14 @@ function SearchTab({ template, onUsage }: { template: string; onUsage: (n: numbe
             />
           ) : (
             <div>
-              <AreaPicker center={center} radiusKm={radiusKm} onPick={(lat, lng) => setCenter({ lat, lng })} />
+              <AreaPicker
+                center={center}
+                radiusKm={radiusKm}
+                onPick={(lat, lng) => setCenter({ lat, lng })}
+                heatPoints={coverage.points}
+                pastCircles={coverage.circles}
+                pastRects={coverage.rects}
+              />
               <div className="flex items-center gap-3 mt-2 flex-wrap">
                 <label className="text-xs text-white/40">Rază: <strong className="text-white/70">{radiusKm} km</strong></label>
                 <input
@@ -369,10 +419,13 @@ function SearchTab({ template, onUsage }: { template: string; onUsage: (n: numbe
                 </span>
               </div>
               <p className="text-[11px] text-white/30 mt-1.5">
-                Pe hartă căutăm și după categorie (tip Google: cazare), nu doar după cuvânt — prinde și locurile cu nume în engleză.
+                Zonele colorate = locuri găsite deja (heatmap); cercurile albastre = zone căutate anterior.
               </p>
             </div>
           )}
+          <p className="text-[11px] text-white/30 mt-1.5">
+            Căutăm și după categorie (tip Google: cazare), nu doar după cuvânt — prinde și locurile cu nume neobișnuit sau în engleză (ex. „A-Frame", „Mountain Chalet"). Zonele mari sunt împărțite automat în zone mai mici, ca să nu rămânem blocați la limita Google de 60 de rezultate per cerere.
+          </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2 mt-4">
@@ -389,7 +442,7 @@ function SearchTab({ template, onUsage }: { template: string; onUsage: (n: numbe
               key={d.pages}
               type="button"
               onClick={() => setPages(d.pages)}
-              title="Mai puține rezultate = mai puține cereri către Google"
+              title="Pagini per zonă căutată — mai multe pagini = mai temeinic, dar mai multe cereri"
               className={`text-xs px-3 py-1 rounded-full border transition-colors ${
                 pages === d.pages ? "bg-sky-500/20 border-sky-500/40 text-sky-200" : "border-white/10 text-white/50 hover:text-white/80"
               }`}
@@ -397,8 +450,8 @@ function SearchTab({ template, onUsage }: { template: string; onUsage: (n: numbe
               {d.label}
             </button>
           ))}
-          <span className="ml-auto text-xs text-white/35">
-            ≈ <strong className="text-white/60">{estRequests}</strong> {estRequests === 1 ? "cerere" : "cereri"} către Google
+          <span className="ml-auto text-xs text-white/35" title="Zonele mari se împart automat în mai multe zone — totalul real apare după căutare.">
+            ≈ <strong className="text-white/60">{estRequestsPerZone}</strong> {estRequestsPerZone === 1 ? "cerere" : "cereri"} / zonă
           </span>
         </div>
       </form>
@@ -427,7 +480,13 @@ function SearchTab({ template, onUsage }: { template: string; onUsage: (n: numbe
           <p className="text-sm text-white/50">
             <strong className="text-white">{filtered.length}</strong> rezultate noi
             {hideKnown && hiddenKnown > 0 && <span className="text-white/30"> ({hiddenKnown} deja salvate, ascunse)</span>}
-            {lastUsed !== null && <span className="text-white/30"> · {lastUsed} {lastUsed === 1 ? "cerere" : "cereri"} folosite</span>}
+            {lastUsed !== null && (
+              <span className="text-white/30">
+                {" "}
+                · {lastUsed} {lastUsed === 1 ? "cerere" : "cereri"} folosite
+                {tilesUsed !== null && tilesUsed > 1 ? ` în ${tilesUsed} zone` : ""}
+              </span>
+            )}
           </p>
           <SortSelect value={sort} onChange={setSort} />
         </div>
@@ -1078,20 +1137,9 @@ function Dashboard() {
     return Array.from(map.entries()).sort((a, b) => b[1].found - a[1].found);
   }, [leads]);
 
-  // Heatmap points = every lead we have coordinates for.
-  const points = useMemo(
-    () =>
-      (leads ?? [])
-        .filter((l) => typeof l.lat === "number" && typeof l.lng === "number")
-        .map((l) => ({ lat: l.lat as number, lng: l.lng as number })),
-    [leads]
-  );
-  // Shaded searched zones: circles for area searches, rectangles for text searches.
-  const circles = useMemo(
-    () => searches.filter((s) => s.area).map((s) => ({ lat: s.area!.lat, lng: s.area!.lng, radiusKm: s.area!.radiusKm })),
-    [searches]
-  );
-  const rects = useMemo(() => searches.filter((s) => !s.area && s.bounds).map((s) => s.bounds!), [searches]);
+  // Same coverage data shown live on the search map — heatmap points (every
+  // lead with coordinates) plus shaded searched zones.
+  const { points, circles, rects } = useMemo(() => computeCoverage(leads ?? [], searches), [leads, searches]);
   const hasCoverage = points.length > 0 || circles.length > 0 || rects.length > 0;
 
   if (!leads) return <p className="text-white/30 text-center py-12">Se încarcă…</p>;
