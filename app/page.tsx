@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import dynamic from "next/dynamic";
 import type { LeadStatus, PitchType, SearchRecord, SearchResult, StoredLead } from "@/lib/types";
 import { PITCH_TYPES, PITCH_TYPE_LABELS, PITCH_TYPE_PHRASES, STATUS_LABELS, scoreLead } from "@/lib/types";
+import { supabaseClient } from "@/lib/supabaseClient";
 
 // Leaflet touches `window` on import, so load the map only in the browser.
 const AreaPicker = dynamic(() => import("./AreaPicker"), {
@@ -564,6 +565,20 @@ function SavedTab({
   }, []);
   useEffect(() => {
     load();
+  }, [load]);
+
+  // Live updates: when she (or you, on another device) changes a lead's
+  // status, refetch so neither of you messages the same person twice.
+  useEffect(() => {
+    const client = supabaseClient;
+    if (!client) return;
+    const channel = client
+      .channel("leads-changes")
+      .on("postgres_changes", { event: "*", schema: "public", table: "leads" }, () => load())
+      .subscribe();
+    return () => {
+      client.removeChannel(channel);
+    };
   }, [load]);
 
   // Distinct counties, and localities within the chosen county, for the area filter.

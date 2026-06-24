@@ -46,7 +46,7 @@ async function forward(address: string) {
 }
 
 export async function POST() {
-  const batch = getLeadsMissingGeo(BATCH);
+  const batch = await getLeadsMissingGeo(BATCH);
   let processed = 0;
 
   for (let i = 0; i < batch.length; i++) {
@@ -54,11 +54,11 @@ export async function POST() {
     try {
       if (typeof lead.lat === "number" && typeof lead.lng === "number") {
         const { locality, county } = await reverse(lead.lat, lead.lng);
-        setLeadGeo(lead.id, { locality, county });
+        await setLeadGeo(lead.id, { locality, county });
       } else if (lead.address) {
         const r = await forward(lead.address);
-        if (r) setLeadGeo(lead.id, { locality: r.locality, county: r.county, lat: r.lat, lng: r.lng });
-        else setLeadGeo(lead.id, {}); // mark tried so we don't loop on it
+        if (r) await setLeadGeo(lead.id, { locality: r.locality, county: r.county, lat: r.lat, lng: r.lng });
+        else await setLeadGeo(lead.id, {}); // mark tried so we don't loop on it
       }
       processed++;
     } catch {
@@ -67,5 +67,5 @@ export async function POST() {
     if (i < batch.length - 1) await new Promise((r) => setTimeout(r, 1100));
   }
 
-  return Response.json({ processed, remaining: countLeadsMissingGeo() });
+  return Response.json({ processed, remaining: await countLeadsMissingGeo() });
 }

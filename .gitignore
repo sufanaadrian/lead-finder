@@ -14,7 +14,8 @@
 .DS_Store
 *.pem
 
-# local database (scraped contact data — never commit)
+# local database — superseded by Supabase (see supabase/schema.sql), kept
+# only as the historical migration source / a local backup. Never commit it.
 /data/
 
 # debug

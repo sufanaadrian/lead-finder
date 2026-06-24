@@ -1,37 +1,63 @@
-// A tiny JSON-file database. This is a single-user local tool, so a plain file
-// read/modify/write is plenty — no native dependencies, easy to inspect/back up.
-// File lives at data/db.json (gitignored — it holds scraped contact data).
+// Data layer, backed by Supabase Postgres (see supabase/schema.sql) so it's
+// shared live between everyone using the app, instead of a local file.
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
-import path from "path";
+import { getSupabaseAdmin } from "./supabaseAdmin";
 import type { Lead, LeadStatus, PitchType, SearchRecord, StoredLead } from "./types";
 
-const DB_PATH = path.join(process.cwd(), "data", "db.json");
-
-type DbShape = {
-  leads: Record<string, StoredLead>;
-  usage: Record<string, number>; // "YYYY-MM-DD" -> Google API request count
-  searches: SearchRecord[]; // history, for the coverage view
+type LeadRow = {
+  id: string;
+  name: string;
+  address: string;
+  phone: string;
+  whatsapp: string;
+  website: string;
+  rating: number;
+  review_count: number;
+  photo_count: number;
+  maps_uri: string;
+  lat: number | null;
+  lng: number | null;
+  locality: string | null;
+  county: string | null;
+  primary_type: string | null;
+  type_label: string | null;
+  status: LeadStatus;
+  interested: boolean;
+  note: string;
+  saved_at: string;
+  contacted_at: string | null;
+  first_query: string;
+  geo_tried: boolean;
+  pitch_type: PitchType | null;
 };
 
-function emptyDb(): DbShape {
-  return { leads: {}, usage: {}, searches: [] };
-}
-
-function readDb(): DbShape {
-  if (!existsSync(DB_PATH)) return emptyDb();
-  try {
-    const parsed = JSON.parse(readFileSync(DB_PATH, "utf-8"));
-    return { leads: parsed.leads ?? {}, usage: parsed.usage ?? {}, searches: parsed.searches ?? [] };
-  } catch {
-    return emptyDb();
-  }
-}
-
-function writeDb(db: DbShape): void {
-  const dir = path.dirname(DB_PATH);
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  writeFileSync(DB_PATH, JSON.stringify(db, null, 2));
+function rowToLead(r: LeadRow): StoredLead {
+  return {
+    id: r.id,
+    name: r.name,
+    address: r.address,
+    phone: r.phone,
+    whatsapp: r.whatsapp,
+    website: r.website,
+    rating: r.rating,
+    reviewCount: r.review_count,
+    photoCount: r.photo_count,
+    mapsUri: r.maps_uri,
+    lat: r.lat ?? undefined,
+    lng: r.lng ?? undefined,
+    locality: r.locality ?? undefined,
+    county: r.county ?? undefined,
+    primaryType: r.primary_type ?? undefined,
+    typeLabel: r.type_label ?? undefined,
+    status: r.status,
+    interested: r.interested,
+    note: r.note,
+    savedAt: r.saved_at,
+    contactedAt: r.contacted_at ?? undefined,
+    firstQuery: r.first_query,
+    geoTried: r.geo_tried,
+    pitchType: r.pitch_type ?? undefined,
+  };
 }
 
 function today(): string {
@@ -40,145 +66,166 @@ function today(): string {
 
 // Records `count` Google API requests against today's tally and returns the
 // running total for today.
-export function recordUsage(count: number): number {
-  const db = readDb();
-  const key = today();
-  db.usage[key] = (db.usage[key] ?? 0) + count;
-  writeDb(db);
-  return db.usage[key];
+export async function recordUsage(count: number): Promise<number> {
+  const supabaseAdmin = getSupabaseAdmin();
+  const day = today();
+  const { data: existing } = await supabaseAdmin
+    .from("usage_counters")
+    .select("count")
+    .eq("day", day)
+    .maybeSingle();
+  const newCount = (existing?.count ?? 0) + count;
+  await supabaseAdmin.from("usage_counters").upsert({ day, count: newCount });
+  return newCount;
 }
 
-export function getUsageToday(): number {
-  return readDb().usage[today()] ?? 0;
+export async function getUsageToday(): Promise<number> {
+  const supabaseAdmin = getSupabaseAdmin();
+  const { data } = await supabaseAdmin
+    .from("usage_counters")
+    .select("count")
+    .eq("day", today())
+    .maybeSingle();
+  return data?.count ?? 0;
 }
 
-// Merges freshly-found leads into the DB. New ones are stored as "new"; existing
-// ones keep their status/note (so we never clobber "contacted"), but their
-// scraped fields are refreshed in case the listing changed.
-export function upsertLeads(leads: Lead[], query: string): Record<string, StoredLead> {
-  const db = readDb();
-  const now = new Date().toISOString();
-  for (const lead of leads) {
-    if (lead.website) continue; // never store places that already have a website
-    const existing = db.leads[lead.id];
-    if (existing) {
-      db.leads[lead.id] = {
-        ...existing,
-        ...lead,
-        status: existing.status,
-        interested: existing.interested ?? false,
-        note: existing.note,
-      };
-    } else {
-      db.leads[lead.id] = {
-        ...lead,
-        status: "new",
-        interested: false,
-        note: "",
-        savedAt: now,
-        firstQuery: query,
-      };
-    }
-  }
-  writeDb(db);
-  return db.leads;
+// Merges freshly-found leads into the DB. New ones are stored as "new";
+// existing ones keep their status/note/interested (so a re-search never
+// clobbers "contacted"), but their scraped fields are refreshed in case the
+// listing changed. The actual merge logic lives in the `upsert_leads` SQL
+// function so it's one round trip no matter how many leads were found.
+export async function upsertLeads(leads: Lead[], query: string): Promise<void> {
+  const supabaseAdmin = getSupabaseAdmin();
+  const candidates = leads.filter((l) => !l.website); // never store places that already have a website
+  if (!candidates.length) return;
+  const payload = candidates.map((l) => ({ ...l, firstQuery: query }));
+  const { error } = await supabaseAdmin.rpc("upsert_leads", { payload });
+  if (error) throw error;
 }
 
-export function getAllLeads(): StoredLead[] {
-  return Object.values(readDb().leads).sort((a, b) => (a.savedAt < b.savedAt ? 1 : -1));
+export async function getAllLeads(): Promise<StoredLead[]> {
+  const supabaseAdmin = getSupabaseAdmin();
+  const { data, error } = await supabaseAdmin
+    .from("leads")
+    .select("*")
+    .order("saved_at", { ascending: false });
+  if (error) throw error;
+  return (data as LeadRow[]).map(rowToLead);
 }
 
-// Append a search to the history (keep the most recent 200).
-export function recordSearch(rec: SearchRecord): void {
-  const db = readDb();
-  db.searches.push(rec);
-  if (db.searches.length > 200) db.searches = db.searches.slice(-200);
-  writeDb(db);
+// Append a search to the history (kept for the coverage view).
+export async function recordSearch(rec: SearchRecord): Promise<void> {
+  const supabaseAdmin = getSupabaseAdmin();
+  const { error } = await supabaseAdmin.from("searches").insert({
+    at: rec.at,
+    terms: rec.terms,
+    location: rec.location,
+    area: rec.area,
+    bounds: rec.bounds,
+    found: rec.found,
+  });
+  if (error) throw error;
 }
 
-export function getSearches(): SearchRecord[] {
-  return readDb().searches;
+export async function getSearches(): Promise<SearchRecord[]> {
+  const supabaseAdmin = getSupabaseAdmin();
+  const { data, error } = await supabaseAdmin
+    .from("searches")
+    .select("at, terms, location, area, bounds, found")
+    .order("at", { ascending: false })
+    .limit(200);
+  if (error) throw error;
+  return data as SearchRecord[];
 }
 
 // Removes any leads that have a website — this tool only cares about places
-// without one. Returns how many were removed. Cheap no-op if there are none.
-export function purgeWebsiteLeads(): number {
-  const db = readDb();
-  let removed = 0;
-  for (const [id, lead] of Object.entries(db.leads)) {
-    if (lead.website) {
-      delete db.leads[id];
-      removed++;
-    }
-  }
-  if (removed > 0) writeDb(db);
-  return removed;
+// without one. Returns how many were removed.
+export async function purgeWebsiteLeads(): Promise<number> {
+  const supabaseAdmin = getSupabaseAdmin();
+  const { data, error } = await supabaseAdmin
+    .from("leads")
+    .delete()
+    .neq("website", "")
+    .select("id");
+  if (error) throw error;
+  return data?.length ?? 0;
 }
 
-// Leads still missing locality/county that we haven't tried to enrich yet and
-// that we CAN enrich (we have either coordinates or an address to geocode).
-function canEnrich(l: StoredLead): boolean {
-  const missing = !l.locality || !l.county;
-  const hasGeoSource = (typeof l.lat === "number" && typeof l.lng === "number") || !!l.address;
-  return missing && !l.geoTried && hasGeoSource;
+export async function getLeadsMissingGeo(limit: number): Promise<StoredLead[]> {
+  const supabaseAdmin = getSupabaseAdmin();
+  const { data, error } = await supabaseAdmin.rpc("get_leads_missing_geo", { p_limit: limit });
+  if (error) throw error;
+  return (data as LeadRow[]).map(rowToLead);
 }
 
-export function getLeadsMissingGeo(limit: number): StoredLead[] {
-  return Object.values(readDb().leads).filter(canEnrich).slice(0, limit);
+export async function countLeadsMissingGeo(): Promise<number> {
+  const supabaseAdmin = getSupabaseAdmin();
+  const { data, error } = await supabaseAdmin.rpc("count_leads_missing_geo");
+  if (error) throw error;
+  return Number(data ?? 0);
 }
 
-export function countLeadsMissingGeo(): number {
-  return Object.values(readDb().leads).filter(canEnrich).length;
-}
-
-// Writes whatever the geocoder found and marks the lead as tried, so it won't
-// be flagged/retried even if nothing usable came back.
-export function setLeadGeo(
+// Writes whatever the geocoder found and marks the lead as tried, so it
+// won't be flagged/retried even if nothing usable came back.
+export async function setLeadGeo(
   id: string,
   patch: { locality?: string; county?: string; lat?: number; lng?: number }
-): void {
-  const db = readDb();
-  const lead = db.leads[id];
-  if (!lead) return;
-  if (patch.locality) lead.locality = patch.locality;
-  if (patch.county) lead.county = patch.county;
-  if (typeof patch.lat === "number") lead.lat = patch.lat;
-  if (typeof patch.lng === "number") lead.lng = patch.lng;
-  lead.geoTried = true;
-  db.leads[id] = lead;
-  writeDb(db);
+): Promise<void> {
+  const supabaseAdmin = getSupabaseAdmin();
+  const update: Record<string, unknown> = { geo_tried: true };
+  if (patch.locality) update.locality = patch.locality;
+  if (patch.county) update.county = patch.county;
+  if (typeof patch.lat === "number") update.lat = patch.lat;
+  if (typeof patch.lng === "number") update.lng = patch.lng;
+  const { error } = await supabaseAdmin.from("leads").update(update).eq("id", id);
+  if (error) throw error;
 }
 
 // For the given ids, returns the status of any that already exist in the DB.
 // Used to tell, right after a search, which results we'd already saved before.
-export function getExistingStatuses(ids: string[]): Record<string, LeadStatus> {
-  const db = readDb();
+export async function getExistingStatuses(ids: string[]): Promise<Record<string, LeadStatus>> {
+  if (!ids.length) return {};
+  const supabaseAdmin = getSupabaseAdmin();
+  const { data, error } = await supabaseAdmin.from("leads").select("id, status").in("id", ids);
+  if (error) throw error;
   const out: Record<string, LeadStatus> = {};
-  for (const id of ids) {
-    if (db.leads[id]) out[id] = db.leads[id].status;
-  }
+  for (const row of data as { id: string; status: LeadStatus }[]) out[row.id] = row.status;
   return out;
 }
 
 // Updates a single lead's status/note/pitch type. Stamps contactedAt the
 // first time it moves to "contacted".
-export function updateLead(
+export async function updateLead(
   id: string,
   patch: { status?: LeadStatus; note?: string; interested?: boolean; pitchType?: PitchType }
-): StoredLead | null {
-  const db = readDb();
-  const lead = db.leads[id];
-  if (!lead) return null;
+): Promise<StoredLead | null> {
+  const supabaseAdmin = getSupabaseAdmin();
+  const { data: current, error: readError } = await supabaseAdmin
+    .from("leads")
+    .select("*")
+    .eq("id", id)
+    .maybeSingle();
+  if (readError) throw readError;
+  if (!current) return null;
+  const row = current as LeadRow;
+
+  const update: Record<string, unknown> = {};
   if (patch.status !== undefined) {
-    lead.status = patch.status;
-    if (patch.status === "contacted" && !lead.contactedAt) {
-      lead.contactedAt = new Date().toISOString();
+    update.status = patch.status;
+    if (patch.status === "contacted" && !row.contacted_at) {
+      update.contacted_at = new Date().toISOString();
     }
   }
-  if (patch.note !== undefined) lead.note = patch.note;
-  if (patch.interested !== undefined) lead.interested = patch.interested;
-  if (patch.pitchType !== undefined) lead.pitchType = patch.pitchType;
-  db.leads[id] = lead;
-  writeDb(db);
-  return lead;
+  if (patch.note !== undefined) update.note = patch.note;
+  if (patch.interested !== undefined) update.interested = patch.interested;
+  if (patch.pitchType !== undefined) update.pitch_type = patch.pitchType;
+
+  const { data: updated, error: writeError } = await supabaseAdmin
+    .from("leads")
+    .update(update)
+    .eq("id", id)
+    .select("*")
+    .single();
+  if (writeError) throw writeError;
+  return rowToLead(updated as LeadRow);
 }

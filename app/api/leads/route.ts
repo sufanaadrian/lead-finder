@@ -10,13 +10,14 @@ const VALID_STATUS: LeadStatus[] = ["new", "contacted", "client", "skip"];
 
 export async function GET() {
   // Clean out any leads that have a website — we only keep ones without.
-  purgeWebsiteLeads();
-  return Response.json({
-    leads: getAllLeads(),
-    usageToday: getUsageToday(),
-    searches: getSearches(),
-    missingGeo: countLeadsMissingGeo(),
-  });
+  await purgeWebsiteLeads();
+  const [leads, usageToday, searches, missingGeo] = await Promise.all([
+    getAllLeads(),
+    getUsageToday(),
+    getSearches(),
+    countLeadsMissingGeo(),
+  ]);
+  return Response.json({ leads, usageToday, searches, missingGeo });
 }
 
 export async function PATCH(req: Request) {
@@ -37,7 +38,7 @@ export async function PATCH(req: Request) {
     return Response.json({ error: "Tip invalid." }, { status: 400 });
   }
 
-  const updated = updateLead(body.id, {
+  const updated = await updateLead(body.id, {
     status: body.status,
     note: body.note,
     interested: body.interested,

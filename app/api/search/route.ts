@@ -14,6 +14,11 @@
 import { recordUsage, upsertLeads, getExistingStatuses, recordSearch } from "@/lib/db";
 import type { Lead, SearchResult } from "@/lib/types";
 
+// A "Complet" search tiles a large area into many parallel tile/term
+// queries, each possibly paginating with a required 1.5s delay between
+// pages — comfortably over Vercel's default 10s function timeout.
+export const maxDuration = 60;
+
 const SEARCH_URL = "https://places.googleapis.com/v1/places:searchText";
 const NEARBY_URL = "https://places.googleapis.com/v1/places:searchNearby";
 const GEOCODE_URL = "https://nominatim.openstreetmap.org/search";
@@ -455,7 +460,7 @@ export async function POST(req: Request) {
     }
   }
 
-  const usageToday = recordUsage(requestsUsed);
+  const usageToday = await recordUsage(requestsUsed);
 
   // If everything failed, surface the error. If only some failed, keep going
   // with whatever we got (and pass the error along as a soft warning).
@@ -481,9 +486,9 @@ export async function POST(req: Request) {
     : undefined;
 
   // Snapshot which results we already had BEFORE saving this batch.
-  const existing = getExistingStatuses(found.map((l) => l.id));
-  upsertLeads(found, queryLabel);
-  recordSearch({
+  const existing = await getExistingStatuses(found.map((l) => l.id));
+  await upsertLeads(found, queryLabel);
+  await recordSearch({
     at: new Date().toISOString(),
     terms,
     location: effectiveArea ? undefined : location,
