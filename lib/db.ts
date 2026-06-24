@@ -29,6 +29,11 @@ type LeadRow = {
   first_query: string;
   geo_tried: boolean;
   pitch_type: PitchType | null;
+  claimed_by: string | null;
+  claimed_at: string | null;
+  contacted_by: string | null;
+  note_by: string | null;
+  assigned_to: string | null;
 };
 
 function rowToLead(r: LeadRow): StoredLead {
@@ -57,6 +62,11 @@ function rowToLead(r: LeadRow): StoredLead {
     firstQuery: r.first_query,
     geoTried: r.geo_tried,
     pitchType: r.pitch_type ?? undefined,
+    claimedBy: r.claimed_by ?? undefined,
+    claimedAt: r.claimed_at ?? undefined,
+    contactedBy: r.contacted_by ?? undefined,
+    noteBy: r.note_by ?? undefined,
+    assignedTo: r.assigned_to ?? undefined,
   };
 }
 
@@ -193,11 +203,21 @@ export async function getExistingStatuses(ids: string[]): Promise<Record<string,
   return out;
 }
 
-// Updates a single lead's status/note/pitch type. Stamps contactedAt the
-// first time it moves to "contacted".
+// Updates a single lead's status/note/pitch type/assignment, or just claims
+// it (see ClaimBanner in app/page.tsx). Stamps contactedAt/contactedBy the
+// first time it moves to "contacted", and noteBy whenever the note changes —
+// `actor` is whoever's making the change (lib/identity.ts), optional.
 export async function updateLead(
   id: string,
-  patch: { status?: LeadStatus; note?: string; interested?: boolean; pitchType?: PitchType }
+  patch: {
+    status?: LeadStatus;
+    note?: string;
+    interested?: boolean;
+    pitchType?: PitchType;
+    assignedTo?: string | null;
+    claim?: boolean;
+    actor?: string;
+  }
 ): Promise<StoredLead | null> {
   const supabaseAdmin = getSupabaseAdmin();
   const { data: current, error: readError } = await supabaseAdmin
@@ -214,11 +234,20 @@ export async function updateLead(
     update.status = patch.status;
     if (patch.status === "contacted" && !row.contacted_at) {
       update.contacted_at = new Date().toISOString();
+      if (patch.actor) update.contacted_by = patch.actor;
     }
   }
-  if (patch.note !== undefined) update.note = patch.note;
+  if (patch.note !== undefined) {
+    update.note = patch.note;
+    if (patch.actor) update.note_by = patch.actor;
+  }
   if (patch.interested !== undefined) update.interested = patch.interested;
   if (patch.pitchType !== undefined) update.pitch_type = patch.pitchType;
+  if (patch.assignedTo !== undefined) update.assigned_to = patch.assignedTo;
+  if (patch.claim && patch.actor) {
+    update.claimed_by = patch.actor;
+    update.claimed_at = new Date().toISOString();
+  }
 
   const { data: updated, error: writeError } = await supabaseAdmin
     .from("leads")

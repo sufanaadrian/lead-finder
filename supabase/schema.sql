@@ -26,7 +26,12 @@ create table if not exists leads (
   contacted_at timestamptz,
   first_query text not null default '',
   geo_tried boolean not null default false,
-  pitch_type text
+  pitch_type text,
+  claimed_by text,
+  claimed_at timestamptz,
+  contacted_by text,
+  note_by text,
+  assigned_to text
 );
 
 create table if not exists usage_counters (

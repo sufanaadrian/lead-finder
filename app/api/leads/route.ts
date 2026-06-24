@@ -1,6 +1,6 @@
 // Read and update the saved leads (the local "CRM").
 //   GET   /api/leads            -> all saved leads + today's API usage
-//   PATCH /api/leads            -> { id, status?, note?, interested?, pitchType? } update one lead
+//   PATCH /api/leads            -> { id, status?, note?, interested?, pitchType?, assignedTo?, claim?, actor? } update one lead
 
 import { getAllLeads, updateLead, getUsageToday, getSearches, purgeWebsiteLeads, countLeadsMissingGeo } from "@/lib/db";
 import { PITCH_TYPES } from "@/lib/types";
@@ -21,7 +21,16 @@ export async function GET() {
 }
 
 export async function PATCH(req: Request) {
-  let body: { id?: string; status?: LeadStatus; note?: string; interested?: boolean; pitchType?: PitchType };
+  let body: {
+    id?: string;
+    status?: LeadStatus;
+    note?: string;
+    interested?: boolean;
+    pitchType?: PitchType;
+    assignedTo?: string | null;
+    claim?: boolean;
+    actor?: string;
+  };
   try {
     body = await req.json();
   } catch {
@@ -43,6 +52,9 @@ export async function PATCH(req: Request) {
     note: body.note,
     interested: body.interested,
     pitchType: body.pitchType,
+    assignedTo: body.assignedTo,
+    claim: body.claim,
+    actor: body.actor,
   });
   if (!updated) {
     return Response.json({ error: "Lead inexistent." }, { status: 404 });

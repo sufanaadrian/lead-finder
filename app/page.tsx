@@ -5,6 +5,7 @@ import dynamic from "next/dynamic";
 import type { LeadStatus, PitchType, SearchRecord, SearchResult, StoredLead } from "@/lib/types";
 import { PITCH_TYPES, PITCH_TYPE_LABELS, PITCH_TYPE_PHRASES, STATUS_LABELS, scoreLead } from "@/lib/types";
 import { supabaseClient } from "@/lib/supabaseClient";
+import { getActor, setActor } from "@/lib/identity";
 
 // Leaflet touches `window` on import, so load the map only in the browser.
 const AreaPicker = dynamic(() => import("./AreaPicker"), {
@@ -111,12 +112,41 @@ function fillTemplate(template: string, lead: { name: string; pitchType?: PitchT
 // Soft warning threshold for daily API requests (the real cap is set in Google Cloud).
 const DAILY_WARN = 80;
 
+// How long a "claim" (someone opened WhatsApp for this lead) stays worth
+// warning about — after this, assume they decided not to message after all.
+const CLAIM_TTL_MIN = 15;
+
+function isClaimFresh(iso?: string): boolean {
+  if (!iso) return false;
+  return Date.now() - new Date(iso).getTime() < CLAIM_TTL_MIN * 60_000;
+}
+
+function timeAgo(iso?: string): string {
+  if (!iso) return "";
+  const min = Math.floor((Date.now() - new Date(iso).getTime()) / 60_000);
+  if (min < 1) return "acum câteva secunde";
+  if (min === 1) return "acum 1 minut";
+  return `acum ${min} minute`;
+}
+
+// Non-blocking heads-up shown when someone else recently opened WhatsApp for
+// this lead — the actual "don't message the same person twice" safeguard.
+function ClaimBanner({ claimedBy, claimedAt, actor }: { claimedBy?: string; claimedAt?: string; actor: string }) {
+  if (!claimedBy || claimedBy === actor || !isClaimFresh(claimedAt)) return null;
+  return (
+    <p className="text-xs text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-lg px-3 py-2 mt-2">
+      ⚠️ {claimedBy} a deschis WhatsApp pentru acest lead {timeAgo(claimedAt)} — verifică înainte să trimiți și tu.
+    </p>
+  );
+}
+
 type Tab = "search" | "saved" | "dashboard";
 
 export default function Home() {
   const [tab, setTab] = useState<Tab>("search");
   const [usageToday, setUsageToday] = useState<number | null>(null);
   const [template, setTemplate] = useState(DEFAULT_TEMPLATE);
+  const [actor, setActorState] = useState("");
 
   // Load the saved WhatsApp template once.
   useEffect(() => {
@@ -126,6 +156,16 @@ export default function Home() {
   useEffect(() => {
     localStorage.setItem("wa_template", template);
   }, [template]);
+
+  // Who's using this browser — used to claim leads and attribute actions
+  // (see lib/identity.ts). Separate from the app password; this is just a name.
+  useEffect(() => {
+    setActorState(getActor());
+  }, []);
+  function saveActor(name: string) {
+    setActor(name);
+    setActorState(name.trim());
+  }
 
   // Keep the usage counter fresh.
   const refreshUsage = useCallback(async () => {
@@ -148,7 +188,10 @@ export default function Home() {
             Pensiuni, cabane și hoteluri <strong className="text-white/70">fără website</strong> — gata de contactat.
           </p>
         </div>
-        <UsageBadge usage={usageToday} />
+        <div className="flex items-center gap-2 shrink-0">
+          <ActorBadge actor={actor} onSave={saveActor} />
+          <UsageBadge usage={usageToday} />
+        </div>
       </header>
 
       <div className="flex gap-1 mb-6 bg-white/[0.03] border border-white/10 rounded-xl p-1 w-fit">
@@ -157,10 +200,51 @@ export default function Home() {
         <TabBtn active={tab === "dashboard"} onClick={() => setTab("dashboard")}>Tablou</TabBtn>
       </div>
 
-      {tab === "search" && <SearchTab template={template} onUsage={setUsageToday} />}
-      {tab === "saved" && <SavedTab template={template} setTemplate={setTemplate} onChanged={refreshUsage} />}
+      {tab === "search" && <SearchTab template={template} actor={actor} onUsage={setUsageToday} />}
+      {tab === "saved" && <SavedTab template={template} setTemplate={setTemplate} actor={actor} onChanged={refreshUsage} />}
       {tab === "dashboard" && <Dashboard />}
     </main>
+  );
+}
+
+// Identity used to claim leads and attribute actions — just a name typed
+// once per browser, not a login. "Schimbă" is there for shared devices.
+function ActorBadge({ actor, onSave }: { actor: string; onSave: (name: string) => void }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+
+  if (!actor || editing) {
+    return (
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (draft.trim()) {
+            onSave(draft);
+            setEditing(false);
+          }
+        }}
+        className="flex items-center gap-1.5 bg-white/[0.03] border border-white/10 rounded-xl px-2.5 py-2"
+      >
+        <span className="text-xs text-white/40">Cine ești?</span>
+        <input
+          autoFocus
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          placeholder="numele tău"
+          className="w-24 bg-black/30 border border-white/10 rounded-md px-2 py-1 text-sm outline-none focus:border-white/30"
+        />
+        <button type="submit" className="text-xs px-2 py-1 rounded-md bg-emerald-500 text-black font-medium">Salvează</button>
+      </form>
+    );
+  }
+  return (
+    <button
+      onClick={() => { setDraft(actor); setEditing(true); }}
+      title="Schimbă numele (dacă folosești acest device împreună cu altcineva)"
+      className="text-xs text-white/40 hover:text-white/70 bg-white/[0.03] border border-white/10 rounded-xl px-3 py-2"
+    >
+      👤 {actor}
+    </button>
   );
 }
 
@@ -195,7 +279,7 @@ function TabBtn({ active, onClick, children }: { active: boolean; onClick: () =>
 
 /* ---------------------------------------------------------------- Search tab */
 
-function SearchTab({ template, onUsage }: { template: string; onUsage: (n: number) => void }) {
+function SearchTab({ template, actor, onUsage }: { template: string; actor: string; onUsage: (n: number) => void }) {
   const [types, setTypes] = useState<string[]>(["pensiune"]);
   const [customType, setCustomType] = useState("");
   const [location, setLocation] = useState("");
@@ -513,6 +597,7 @@ function SearchTab({ template, onUsage }: { template: string; onUsage: (n: numbe
             lead={{ ...l, status: overrides[l.id] ?? l.status }}
             known={l.known}
             template={template}
+            actor={actor}
             onStatus={(s) => handleStatus(l.id, s)}
           />
         ))}
@@ -537,10 +622,12 @@ function SearchTab({ template, onUsage }: { template: string; onUsage: (n: numbe
 function SavedTab({
   template,
   setTemplate,
+  actor,
   onChanged,
 }: {
   template: string;
   setTemplate: (t: string) => void;
+  actor: string;
   onChanged: () => void;
 }) {
   const [leads, setLeads] = useState<StoredLead[] | null>(null);
@@ -551,6 +638,7 @@ function SavedTab({
   const [localityFilter, setLocalityFilter] = useState<string>("all");
   const [interestedOnly, setInterestedOnly] = useState(false);
   const [followupOnly, setFollowupOnly] = useState(false);
+  const [mineOnly, setMineOnly] = useState(false);
   const [requirePhone, setRequirePhone] = useState(true);
   const [requireReviews, setRequireReviews] = useState(false);
   const [requirePhotos, setRequirePhotos] = useState(false);
@@ -581,6 +669,14 @@ function SavedTab({
     };
   }, [load]);
 
+  // Forces a re-render every 30s so claim banners' "acum X minute" stays
+  // roughly accurate even when nobody's triggered a Realtime refetch.
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setTick((t) => t + 1), 30_000);
+    return () => clearInterval(id);
+  }, []);
+
   // Distinct counties, and localities within the chosen county, for the area filter.
   const counties = useMemo(() => {
     const set = new Set<string>();
@@ -610,6 +706,7 @@ function SavedTab({
       if (localityFilter !== "all" && l.locality !== localityFilter) return false;
       if (interestedOnly && !l.interested) return false;
       if (followupOnly && !needsFollowup(l)) return false;
+      if (mineOnly && l.assignedTo !== actor) return false;
       if (requirePhone && !l.phone) return false;
       if (requireReviews && l.reviewCount <= 0) return false;
       if (requirePhotos && l.photoCount <= 0) return false;
@@ -617,7 +714,7 @@ function SavedTab({
     });
     return sortLeads(f, sort);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [leads, statusFilter, countyFilter, localityFilter, interestedOnly, followupOnly, requirePhone, requireReviews, requirePhotos, sort]);
+  }, [leads, statusFilter, countyFilter, localityFilter, interestedOnly, followupOnly, mineOnly, actor, requirePhone, requireReviews, requirePhotos, sort]);
 
   function exportCsv() {
     const rows = [
@@ -687,6 +784,7 @@ function SavedTab({
           <Toggle on={requirePhone} onClick={() => setRequirePhone((v) => !v)} label="Doar cu telefon" />
           <Toggle on={requireReviews} onClick={() => setRequireReviews((v) => !v)} label="Doar cu recenzii" />
           <Toggle on={requirePhotos} onClick={() => setRequirePhotos((v) => !v)} label="Doar cu poze" />
+          {actor && <Toggle on={mineOnly} onClick={() => setMineOnly((v) => !v)} label="👤 Doar ale mele" />}
         </div>
       </div>
 
@@ -742,6 +840,13 @@ function SavedTab({
             rows={4}
             className="w-full bg-black/30 border border-white/10 rounded-lg px-3 py-2.5 outline-none focus:border-white/30 text-sm resize-none"
           />
+          {(!template.includes("{nume}") || !template.includes("{tip}")) && (
+            <p className="text-xs text-amber-300 mt-1.5">
+              ⚠️ Lipsește {!template.includes("{nume}") && <code>{"{nume}"}</code>}
+              {!template.includes("{nume}") && !template.includes("{tip}") && " și "}
+              {!template.includes("{tip}") && <code>{"{tip}"}</code>} din mesaj — se va trimite neînlocuit.
+            </p>
+          )}
         </div>
       )}
 
@@ -767,8 +872,10 @@ function SavedTab({
             lead={l}
             known={false}
             template={template}
+            actor={actor}
             onStatus={() => { load(); onChanged(); }}
             onInterested={() => { load(); }}
+            onRefresh={load}
             editableType
           />
         ))}
@@ -782,6 +889,7 @@ function SavedTab({
         <ContactStepper
           leads={filtered}
           template={template}
+          actor={actor}
           onClose={() => { setContactMode(false); load(); onChanged(); }}
         />
       )}
@@ -884,27 +992,33 @@ type CardLead = {
   id: string; name: string; address: string; phone: string; whatsapp: string; website: string;
   rating: number; reviewCount: number; photoCount: number; mapsUri: string; status: LeadStatus;
   lat?: number; lng?: number; locality?: string; county?: string; typeLabel?: string; primaryType?: string;
-  interested?: boolean; pitchType?: PitchType;
+  interested?: boolean; pitchType?: PitchType; note?: string;
+  claimedBy?: string; claimedAt?: string; contactedBy?: string; noteBy?: string; assignedTo?: string;
 };
 
 function LeadCard({
   lead,
   known,
   template,
+  actor,
   onStatus,
   onInterested,
+  onRefresh,
   editableType = false,
 }: {
   lead: CardLead;
   known: boolean;
   template: string;
+  actor: string;
   onStatus: (s: LeadStatus) => void;
   onInterested?: (v: boolean) => void;
+  onRefresh?: () => void;
   editableType?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [interested, setInterested] = useState(!!lead.interested);
   const [pitchType, setPitchType] = useState<PitchType>(lead.pitchType ?? "pensiune");
+  const [note, setNote] = useState(lead.note ?? "");
   // After opening WhatsApp, ask before marking contacted — opening the app
   // doesn't mean the message actually got sent.
   const [confirmSend, setConfirmSend] = useState(false);
@@ -914,7 +1028,7 @@ function LeadCard({
       await fetch("/api/leads", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: lead.id, ...body }),
+        body: JSON.stringify({ id: lead.id, actor: actor || undefined, ...body }),
       });
     } catch {}
   }
@@ -936,8 +1050,21 @@ function LeadCard({
     patch({ pitchType: t });
   }
 
+  function saveNote() {
+    if (note !== (lead.note ?? "")) {
+      patch({ note });
+      onRefresh?.();
+    }
+  }
+
+  function toggleAssign() {
+    patch({ assignedTo: lead.assignedTo === actor ? null : actor });
+    onRefresh?.();
+  }
+
   function openWhatsApp() {
     openWhatsAppApp(lead.whatsapp, fillTemplate(template, { name: lead.name, pitchType }));
+    if (actor) patch({ claim: true });
     // Opening the app isn't the same as sending — ask before marking it.
     if (lead.status === "new") setConfirmSend(true);
   }
@@ -963,7 +1090,13 @@ function LeadCard({
             <h3 className="font-semibold truncate">{lead.name}</h3>
             <span className={`text-[10px] px-1.5 py-0.5 rounded border ${STATUS_STYLE[lead.status]}`}>
               {STATUS_LABELS[lead.status]}
+              {lead.contactedBy && (lead.status === "contacted" || lead.status === "client") ? ` · ${lead.contactedBy}` : ""}
             </span>
+            {lead.assignedTo && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/8 text-white/45 border border-white/15">
+                👤 {lead.assignedTo}
+              </span>
+            )}
             {lead.typeLabel && (
               <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/8 text-white/55 border border-white/15">{lead.typeLabel}</span>
             )}
@@ -984,6 +1117,17 @@ function LeadCard({
 
         <div className="flex flex-wrap gap-2 shrink-0">
           {editableType && <PitchTypeSelect value={pitchType} onChange={changePitchType} />}
+          {editableType && actor && (
+            <button
+              onClick={toggleAssign}
+              title={lead.assignedTo && lead.assignedTo !== actor ? `Alocat lui ${lead.assignedTo} — apasă pentru a-l aloca ție` : undefined}
+              className={`px-3 py-2 rounded-lg border text-sm transition-colors ${
+                lead.assignedTo === actor ? "bg-white/10 border-white/30 text-white" : "border-white/15 text-white/50 hover:bg-white/5"
+              }`}
+            >
+              {lead.assignedTo === actor ? "✓ Alocat ție" : "Alocă-mi"}
+            </button>
+          )}
           {lead.whatsapp && (
             <button onClick={openWhatsApp} className="px-3 py-2 rounded-lg bg-emerald-500 text-black text-sm font-medium hover:bg-emerald-400 transition-colors">
               WhatsApp
@@ -1020,6 +1164,8 @@ function LeadCard({
         </div>
       </div>
 
+      <ClaimBanner claimedBy={lead.claimedBy} claimedAt={lead.claimedAt} actor={actor} />
+
       {confirmSend && lead.status === "new" && (
         <div className="mt-3 flex items-center gap-2 flex-wrap text-sm bg-amber-500/10 border border-amber-500/30 rounded-lg px-3 py-2">
           <span className="text-amber-200/90">Ai trimis mesajul?</span>
@@ -1033,6 +1179,7 @@ function LeadCard({
       )}
 
       {expanded && (
+        <>
         <div className="mt-4 pt-4 border-t border-white/10 grid md:grid-cols-2 gap-4">
           {/* Left: facts */}
           <div className="flex flex-col gap-3">
@@ -1082,6 +1229,20 @@ function LeadCard({
             />
           </div>
         </div>
+        <div className="mt-3">
+          <label className="block text-xs text-white/40 mb-1.5">
+            Notă{lead.noteBy ? ` (ultima de ${lead.noteBy})` : ""}
+          </label>
+          <textarea
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            onBlur={saveNote}
+            rows={2}
+            placeholder="ex: a răspuns, vrea ofertă pe email…"
+            className="w-full bg-black/30 border border-white/10 rounded-lg px-3 py-2 outline-none focus:border-white/30 text-sm resize-none"
+          />
+        </div>
+        </>
       )}
     </div>
   );
@@ -1101,10 +1262,12 @@ function Detail({ label, children }: { label: string; children: React.ReactNode 
 function ContactStepper({
   leads,
   template,
+  actor,
   onClose,
 }: {
   leads: StoredLead[];
   template: string;
+  actor: string;
   onClose: () => void;
 }) {
   const [i, setI] = useState(0);
@@ -1121,7 +1284,7 @@ function ContactStepper({
       await fetch("/api/leads", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: lead.id, ...body }),
+        body: JSON.stringify({ id: lead.id, actor: actor || undefined, ...body }),
       });
     } catch {}
   }
@@ -1135,12 +1298,17 @@ function ContactStepper({
     setI((v) => v + 1);
   }
 
+  function back() {
+    setI((v) => Math.max(0, v - 1));
+  }
+
   // Opening WhatsApp doesn't mean the message was actually sent, so it no
   // longer marks the lead contacted or advances on its own — "✓ Am trimis"
   // does that explicitly, once you're sure.
   function whatsapp() {
     if (!lead) return;
     openWhatsAppApp(lead.whatsapp, fillTemplate(template, { name: lead.name, pitchType }));
+    if (actor) patch({ claim: true });
   }
 
   function markSent() {
@@ -1178,6 +1346,7 @@ function ContactStepper({
                 <span>⭐ {lead.rating || "—"} ({lead.reviewCount})</span>
                 {lead.mapsUri && <a href={lead.mapsUri} target="_blank" rel="noopener noreferrer" className="text-sky-300 hover:underline">Maps ↗</a>}
               </div>
+              <ClaimBanner claimedBy={lead.claimedBy} claimedAt={lead.claimedAt} actor={actor} />
             </div>
 
             <div className="flex items-center gap-2 mb-1">
@@ -1206,6 +1375,11 @@ function ContactStepper({
               <button onClick={next} className="px-4 py-3 rounded-lg border border-white/15 text-sm hover:bg-white/5" title="Sari peste, fără schimbări">
                 Sari →
               </button>
+              {i > 0 && (
+                <button onClick={back} className="px-4 py-3 rounded-lg border border-white/15 text-sm text-white/50 hover:bg-white/5" title="Înapoi la cel anterior">
+                  ← Înapoi
+                </button>
+              )}
             </div>
           </>
         )}

@@ -19,6 +19,10 @@ Folosește **Google Places API (New)**, aceeași sursă de date pe care o vezi �
 - **De urmărit**: leadurile contactate acum 3+ zile, fără răspuns, apar separat pentru follow-up
 - **Tablou**: statistici totale + pe județe, și o hartă cu zonele deja căutate (acoperire)
 - **Bază de date live (Supabase)** care reține tot ce ai găsit — nu mai scrii pe nimeni de două ori, și e partajată în timp real între toți cei care folosesc aplicația (ex: tu + altă persoană, fiecare de pe laptopul ei) — când unul marchează un lead „Contactat", celălalt vede schimbarea imediat, fără refresh
+- **Avertisment de "claim"**: dacă cineva a deschis WhatsApp pentru un lead în ultimele 15 minute, celălalt vede un avertisment înainte să trimită și el — ca să nu scrieți amândoi aceleași persoane
+- **Atribuire**: fiecare lead arată cine l-a contactat și cine a scris ultima notă
+- **Alocare**: poți să-ți „alochezi" un lead (buton „Alocă-mi") și să filtrezi „Doar ale mele" — utile ca să vă împărțiți zonele/listele între voi
+- **Notițe editabile** direct pe fiecare lead (în „Detalii")
 - Status pentru fiecare lead: Nou / Contactat / Client / Ignorat, + notițe
 - Filtre (toggle): doar fără website · doar cu telefon · doar cu recenzii · doar cu poze · ascunde cele deja găsite
 - **Export CSV** pentru lista filtrată
@@ -64,13 +68,19 @@ GOOGLE_PLACES_API_KEY=cheia_ta_google
 NEXT_PUBLIC_SUPABASE_URL=https://xxxxx.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=cheia_anon
 SUPABASE_SERVICE_ROLE_KEY=cheia_service_role
+APP_USER=lead-finder
+APP_PASSWORD=o_parolă_a_ta
 ```
+
+`APP_USER`/`APP_PASSWORD` sunt opționale local (lasă `APP_PASSWORD` gol și nu se cere nimic), dar **obligatorii la deploy** — vezi „Deploy" mai jos.
 
 **4. Dacă vii dintr-o versiune mai veche** (cu date în `data/db.json`), importă-le o singură dată:
 
 ```sh
 node --env-file=.env.local scripts/migrate-to-supabase.mjs
 ```
+
+**5. Dacă proiectul Supabase a fost creat înainte de funcțiile de claim/atribuire/alocare**, rulează o singură dată în SQL Editor și conținutul din [`supabase/migrations/0002_collaboration.sql`](supabase/migrations/0002_collaboration.sql) (proiectele noi le au deja din `schema.sql`).
 
 ## Rulare
 
@@ -84,13 +94,13 @@ Deschide [localhost:3000](http://localhost:3000).
 ## Deploy (Vercel) — ca să folosești aplicația de pe orice laptop/telefon
 
 1. Pe [vercel.com](https://vercel.com), **Add New → Project**, importă acest repo din GitHub (e nevoie să fie pe GitHub — `git push` dacă nu e deja).
-2. La pasul de configurare, sub **Environment Variables**, adaugă exact cele 4 variabile din `.env.local` (aceleași nume, aceleași valori).
-3. **Deploy**. Vercel îți dă un URL public (`ceva.vercel.app`) — acela e link-ul pe care îl folosești și tu, și ea, de pe orice device.
+2. La pasul de configurare, sub **Environment Variables**, adaugă exact cele 6 variabile din `.env.local` (aceleași nume, aceleași valori) — **setează neapărat și `APP_PASSWORD`** (alege o parolă a ta, nu lăsa goală, altfel aplicația e publică pentru orice are link-ul).
+3. **Deploy**. Vercel îți dă un URL public (`ceva.vercel.app`) — acela e link-ul pe care îl folosești și tu, și ea, de pe orice device. Browserul va cere user/parolă (Basic Auth) la prima vizită — alea sunt `APP_USER`/`APP_PASSWORD` de mai sus.
 4. La fiecare `git push` pe `master`, Vercel redeploy-ează automat.
 
 **E gratuit?** Da, pentru acest volum de folosire: planul **Hobby** al Vercel ($0) și planul **Free** al Supabase ($0) sunt amândouă suficiente. Singurul cost real e API-ul Google Places, care e separat și nu se schimbă cu hosting-ul.
 
-> ⚠️ Aplicația deployată e accesibilă oricui are link-ul — nu are încă un ecran de login. E ok pentru tine + ea (link-ul nu e public altundeva), dar nu-l distribui mai departe. Dacă vrei o parolă/login, e un pas separat (Supabase Auth) — nu e implementat momentan.
+> La prima utilizare, fiecare dintre voi va fi întrebat(ă) „Cine ești?" (sus, lângă contorul de cereri) — e doar un nume, salvat în browser, folosit pentru claim-uri și atribuire (cine a contactat / cine a scris notița), nu un cont real.
 
 ## Cum caută (important)
 

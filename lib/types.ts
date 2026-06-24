@@ -62,6 +62,11 @@ export type StoredLead = Lead & {
   firstQuery: string;
   geoTried?: boolean; // we've attempted to fill locality/county (avoid retrying forever)
   pitchType?: PitchType; // hand-picked, defaults to "pensiune" when unset
+  claimedBy?: string; // who last opened WhatsApp for this lead (soft lock, see ClaimBanner)
+  claimedAt?: string;
+  contactedBy?: string; // who actually sent the first message
+  noteBy?: string; // who last edited the note
+  assignedTo?: string; // who's working this lead (manual, for splitting territory)
 };
 
 // A search result handed to the UI: the fresh data, plus whether we've seen it
