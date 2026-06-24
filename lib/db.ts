@@ -191,6 +191,31 @@ export async function setLeadGeo(
   if (error) throw error;
 }
 
+const TEMPLATE_KEY = "wa_template";
+
+// The shared WhatsApp message template, editable from either of your
+// devices (see app_settings in supabase/schema.sql). Returns null if nobody
+// has saved one yet — the caller falls back to its own built-in default.
+export async function getTemplate(): Promise<{ value: string; updatedBy?: string } | null> {
+  const supabaseAdmin = getSupabaseAdmin();
+  const { data, error } = await supabaseAdmin
+    .from("app_settings")
+    .select("value, updated_by")
+    .eq("key", TEMPLATE_KEY)
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) return null;
+  return { value: data.value, updatedBy: data.updated_by ?? undefined };
+}
+
+export async function setTemplate(value: string, actor?: string): Promise<void> {
+  const supabaseAdmin = getSupabaseAdmin();
+  const { error } = await supabaseAdmin
+    .from("app_settings")
+    .upsert({ key: TEMPLATE_KEY, value, updated_by: actor ?? null, updated_at: new Date().toISOString() });
+  if (error) throw error;
+}
+
 // For the given ids, returns the status of any that already exist in the DB.
 // Used to tell, right after a search, which results we'd already saved before.
 export async function getExistingStatuses(ids: string[]): Promise<Record<string, LeadStatus>> {

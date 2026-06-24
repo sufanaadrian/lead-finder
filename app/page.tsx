@@ -5,7 +5,7 @@ import dynamic from "next/dynamic";
 import type { LeadStatus, PitchType, SearchRecord, SearchResult, StoredLead } from "@/lib/types";
 import { PITCH_TYPES, PITCH_TYPE_LABELS, PITCH_TYPE_PHRASES, STATUS_LABELS, scoreLead } from "@/lib/types";
 import { supabaseClient } from "@/lib/supabaseClient";
-import { getActor, setActor } from "@/lib/identity";
+import { getActor, setActor, USERS } from "@/lib/identity";
 
 // Leaflet touches `window` on import, so load the map only in the browser.
 const AreaPicker = dynamic(() => import("./AreaPicker"), {
@@ -62,8 +62,6 @@ function computeCoverage(leads: { lat?: number; lng?: number }[], searches: Sear
   return { points, circles, rects };
 }
 
-const FOLLOWUP_DAYS = 3;
-
 // Opens the native WhatsApp app via the whatsapp:// scheme WITHOUT navigating
 // the page away (an anchor click triggers the OS handler but leaves React
 // state intact — important so the contact stepper can advance afterwards).
@@ -100,13 +98,18 @@ const DEPTHS = [
 ];
 
 const DEFAULT_TEMPLATE =
-  "Bună ziua! Am văzut {tip} dumneavoastră, {nume}, pe Google și am observat că nu aveți încă un site web. Realizez site-uri pentru pensiuni și cabane și aș putea să vă fac unul frumos, rapid. V-ar interesa câteva detalii?";
+  "Bună ziua!\n\nMă numesc {eu} și sunt dezvoltator web. Am observat {tip} dumneavoastră ({nume}) și m-am gândit să vă contactez deoarece realizez site-uri pentru pensiuni și cabane.\n\nRecent am finalizat câteva proiecte similare chiar in Jina, și cred că un site propriu poate fi util pentru prezentarea locației și o vizibilitate mai buna.\n\nDacă vă interesează, vă pot trimite câteva exemple de site-uri realizate de mine.";
 
-// Fills both {nume} and {tip} in one place so every WhatsApp send/preview
+// Fills {nume}, {tip} and {eu} in one place so every WhatsApp send/preview
 // stays consistent. {tip} comes from the hand-picked pitchType (default
 // "pensiune") — guessing it from Google's place type turned out unreliable.
-function fillTemplate(template: string, lead: { name: string; pitchType?: PitchType }): string {
-  return template.replaceAll("{nume}", lead.name).replaceAll("{tip}", PITCH_TYPE_PHRASES[lead.pitchType ?? "pensiune"]);
+// {eu} comes from whoever is logged in (see lib/identity.ts), so the message
+// signs itself correctly regardless of who's sending it.
+function fillTemplate(template: string, lead: { name: string; pitchType?: PitchType }, actor?: string): string {
+  return template
+    .replaceAll("{nume}", lead.name)
+    .replaceAll("{tip}", PITCH_TYPE_PHRASES[lead.pitchType ?? "pensiune"])
+    .replaceAll("{eu}", actor || "Adrian");
 }
 
 // Soft warning threshold for daily API requests (the real cap is set in Google Cloud).
@@ -146,25 +149,59 @@ export default function Home() {
   const [tab, setTab] = useState<Tab>("search");
   const [usageToday, setUsageToday] = useState<number | null>(null);
   const [template, setTemplate] = useState(DEFAULT_TEMPLATE);
+  const [templateBy, setTemplateBy] = useState<string | undefined>();
   const [actor, setActorState] = useState("");
+  const [pickerOpen, setPickerOpen] = useState(false);
 
-  // Load the saved WhatsApp template once.
-  useEffect(() => {
-    const saved = localStorage.getItem("wa_template");
-    if (saved) setTemplate(saved);
+  // The WhatsApp template is shared (app_settings table) so either of you
+  // editing it updates the other live, instead of each keeping a local copy.
+  const loadTemplate = useCallback(async () => {
+    try {
+      const res = await fetch("/api/settings");
+      const data = await res.json();
+      if (data.template) setTemplate(data.template);
+      setTemplateBy(data.updatedBy);
+    } catch {}
   }, []);
   useEffect(() => {
-    localStorage.setItem("wa_template", template);
-  }, [template]);
+    loadTemplate();
+  }, [loadTemplate]);
+  useEffect(() => {
+    const client = supabaseClient;
+    if (!client) return;
+    const channel = client
+      .channel("settings-changes")
+      .on("postgres_changes", { event: "*", schema: "public", table: "app_settings" }, () => loadTemplate())
+      .subscribe();
+    return () => {
+      client.removeChannel(channel);
+    };
+  }, [loadTemplate]);
+
+  async function saveTemplate(value: string) {
+    setTemplate(value);
+    setTemplateBy(actor || undefined);
+    try {
+      await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ template: value, actor: actor || undefined }),
+      });
+    } catch {}
+  }
 
   // Who's using this browser — used to claim leads and attribute actions
-  // (see lib/identity.ts). Separate from the app password; this is just a name.
+  // (see lib/identity.ts). Separate from the app password; this is just a
+  // name. Ask right away if nobody's picked one on this device yet.
   useEffect(() => {
-    setActorState(getActor());
+    const a = getActor();
+    setActorState(a);
+    if (!a) setPickerOpen(true);
   }, []);
   function saveActor(name: string) {
     setActor(name);
-    setActorState(name.trim());
+    setActorState(name);
+    setPickerOpen(false);
   }
 
   // Keep the usage counter fresh.
@@ -180,71 +217,84 @@ export default function Home() {
   }, [refreshUsage]);
 
   return (
-    <main className="min-h-screen max-w-5xl mx-auto px-5 py-10">
-      <header className="mb-6 flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight">Lead Finder</h1>
-          <p className="text-white/50 mt-1">
-            Pensiuni, cabane și hoteluri <strong className="text-white/70">fără website</strong> — gata de contactat.
+    <main className="min-h-screen max-w-5xl mx-auto px-5 py-6">
+      <header className="mb-5 flex items-center justify-between gap-4">
+        <div className="flex items-baseline gap-2 min-w-0">
+          <h1 className="text-lg font-bold tracking-tight shrink-0">Lead Finder</h1>
+          <p className="text-xs text-white/40 truncate hidden sm:block">
+            Pensiuni, cabane și hoteluri fără website — gata de contactat.
           </p>
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          <ActorBadge actor={actor} onSave={saveActor} />
+          <ActorBadge actor={actor} onClick={() => setPickerOpen(true)} />
           <UsageBadge usage={usageToday} />
         </div>
       </header>
 
-      <div className="flex gap-1 mb-6 bg-white/[0.03] border border-white/10 rounded-xl p-1 w-fit">
-        <TabBtn active={tab === "search"} onClick={() => setTab("search")}>Căutare</TabBtn>
-        <TabBtn active={tab === "saved"} onClick={() => setTab("saved")}>Salvate</TabBtn>
-        <TabBtn active={tab === "dashboard"} onClick={() => setTab("dashboard")}>Tablou</TabBtn>
+      <div className="flex gap-1 mb-6 bg-white/[0.03] border border-white/10 rounded-xl p-1">
+        <TabBtn icon="🔍" active={tab === "search"} onClick={() => setTab("search")}>Căutare</TabBtn>
+        <TabBtn icon="📋" active={tab === "saved"} onClick={() => setTab("saved")}>Salvate</TabBtn>
+        <TabBtn icon="📊" active={tab === "dashboard"} onClick={() => setTab("dashboard")}>Tablou</TabBtn>
       </div>
 
       {tab === "search" && <SearchTab template={template} actor={actor} onUsage={setUsageToday} />}
-      {tab === "saved" && <SavedTab template={template} setTemplate={setTemplate} actor={actor} onChanged={refreshUsage} />}
+      {tab === "saved" && (
+        <SavedTab template={template} templateBy={templateBy} onSaveTemplate={saveTemplate} actor={actor} onChanged={refreshUsage} />
+      )}
       {tab === "dashboard" && <Dashboard />}
+
+      {pickerOpen && (
+        <ActorPicker current={actor} onSelect={saveActor} onClose={actor ? () => setPickerOpen(false) : undefined} />
+      )}
     </main>
   );
 }
 
-// Identity used to claim leads and attribute actions — just a name typed
-// once per browser, not a login. "Schimbă" is there for shared devices.
-function ActorBadge({ actor, onSave }: { actor: string; onSave: (name: string) => void }) {
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState("");
-
-  if (!actor || editing) {
-    return (
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (draft.trim()) {
-            onSave(draft);
-            setEditing(false);
-          }
-        }}
-        className="flex items-center gap-1.5 bg-white/[0.03] border border-white/10 rounded-xl px-2.5 py-2"
-      >
-        <span className="text-xs text-white/40">Cine ești?</span>
-        <input
-          autoFocus
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          placeholder="numele tău"
-          className="w-24 bg-black/30 border border-white/10 rounded-md px-2 py-1 text-sm outline-none focus:border-white/30"
-        />
-        <button type="submit" className="text-xs px-2 py-1 rounded-md bg-emerald-500 text-black font-medium">Salvează</button>
-      </form>
-    );
-  }
+// Identity used to claim leads and attribute actions — picked once per
+// browser from a fixed list (just the two of you), not a real login.
+function ActorBadge({ actor, onClick }: { actor: string; onClick: () => void }) {
+  if (!actor) return null;
   return (
     <button
-      onClick={() => { setDraft(actor); setEditing(true); }}
-      title="Schimbă numele (dacă folosești acest device împreună cu altcineva)"
+      onClick={onClick}
+      title="Schimbă utilizatorul (dacă folosești acest device împreună cu altcineva)"
       className="text-xs text-white/40 hover:text-white/70 bg-white/[0.03] border border-white/10 rounded-xl px-3 py-2"
     >
       👤 {actor}
     </button>
+  );
+}
+
+// Big, hard-to-miss picker — shown automatically the first time the app
+// loads on a device, and again via the "👤" badge to switch users.
+function ActorPicker({ current, onSelect, onClose }: { current: string; onSelect: (name: string) => void; onClose?: () => void }) {
+  return (
+    <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm grid place-items-center p-4" onClick={onClose}>
+      <div className="bg-zinc-950 border border-white/15 rounded-2xl w-full max-w-sm p-8 text-center" onClick={(e) => e.stopPropagation()}>
+        <h2 className="text-xl font-semibold mb-1">Cine ești?</h2>
+        <p className="text-sm text-white/40 mb-6">Alege un nume — îl folosim pentru mesaje și pentru a vedea cine a contactat pe cine.</p>
+        <div className="flex flex-col gap-3">
+          {USERS.map((name) => (
+            <button
+              key={name}
+              onClick={() => onSelect(name)}
+              className={`px-5 py-4 rounded-xl border text-lg font-medium transition-colors ${
+                current === name
+                  ? "bg-emerald-500/20 border-emerald-400/60 text-emerald-200"
+                  : "border-white/15 text-white/80 hover:bg-white/5"
+              }`}
+            >
+              {name}
+            </button>
+          ))}
+        </div>
+        {onClose && (
+          <button onClick={onClose} className="mt-5 text-xs text-white/30 hover:text-white/60">
+            Anulează
+          </button>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -264,14 +314,25 @@ function UsageBadge({ usage }: { usage: number | null }) {
   );
 }
 
-function TabBtn({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+function TabBtn({
+  active,
+  onClick,
+  icon,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  icon: string;
+  children: React.ReactNode;
+}) {
   return (
     <button
       onClick={onClick}
-      className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+      className={`flex-1 flex items-center justify-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
         active ? "bg-white/15 text-white" : "text-white/45 hover:text-white/70"
       }`}
     >
+      <span>{icon}</span>
       {children}
     </button>
   );
@@ -554,8 +615,10 @@ function SearchTab({ template, actor, onUsage }: { template: string; actor: stri
         </div>
       </form>
 
-      <div className="mb-5">
-        <p className="text-xs text-white/35 mb-2">Doar locuri <strong className="text-emerald-300/80">fără website</strong>. Filtre (verde = activ):</p>
+      <div className="bg-white/[0.03] border border-white/10 rounded-xl p-4 mb-5">
+        <p className="text-xs text-white/35 mb-2">
+          Doar locuri <strong className="text-emerald-300/80">fără website</strong>. Filtre (verde = activ):
+        </p>
         <div className="flex flex-wrap gap-2.5">
           <Toggle on={hideKnown} onClick={() => setHideKnown((v) => !v)} label="Ascunde cele deja găsite" />
           <Toggle on={requirePhone} onClick={() => setRequirePhone((v) => !v)} label="Doar cu telefon" />
@@ -621,23 +684,30 @@ function SearchTab({ template, actor, onUsage }: { template: string; actor: stri
 
 function SavedTab({
   template,
-  setTemplate,
+  templateBy,
+  onSaveTemplate,
   actor,
   onChanged,
 }: {
   template: string;
-  setTemplate: (t: string) => void;
+  templateBy?: string;
+  onSaveTemplate: (t: string) => void;
   actor: string;
   onChanged: () => void;
 }) {
   const [leads, setLeads] = useState<StoredLead[] | null>(null);
+  // Local draft so typing doesn't hit the network on every keystroke — only
+  // committed (via onSaveTemplate) on blur, same pattern as the lead notes.
+  const [templateDraft, setTemplateDraft] = useState(template);
+  useEffect(() => {
+    setTemplateDraft(template);
+  }, [template]);
   // Default to "new" — once a lead's contacted/skipped/a client, there's no
   // point seeing it again every time the page loads.
   const [statusFilter, setStatusFilter] = useState<LeadStatus | "all">("new");
   const [countyFilter, setCountyFilter] = useState<string>("all");
   const [localityFilter, setLocalityFilter] = useState<string>("all");
   const [interestedOnly, setInterestedOnly] = useState(false);
-  const [followupOnly, setFollowupOnly] = useState(false);
   const [mineOnly, setMineOnly] = useState(false);
   const [requirePhone, setRequirePhone] = useState(true);
   const [requireReviews, setRequireReviews] = useState(false);
@@ -694,10 +764,6 @@ function SavedTab({
     return Array.from(set).sort();
   }, [leads, countyFilter]);
 
-  const followupCutoff = Date.now() - FOLLOWUP_DAYS * 86400_000;
-  const needsFollowup = (l: StoredLead) =>
-    l.status === "contacted" && !!l.contactedAt && new Date(l.contactedAt).getTime() < followupCutoff;
-
   const filtered = useMemo(() => {
     if (!leads) return [];
     const f = leads.filter((l) => {
@@ -705,7 +771,6 @@ function SavedTab({
       if (countyFilter !== "all" && l.county !== countyFilter) return false;
       if (localityFilter !== "all" && l.locality !== localityFilter) return false;
       if (interestedOnly && !l.interested) return false;
-      if (followupOnly && !needsFollowup(l)) return false;
       if (mineOnly && l.assignedTo !== actor) return false;
       if (requirePhone && !l.phone) return false;
       if (requireReviews && l.reviewCount <= 0) return false;
@@ -714,7 +779,7 @@ function SavedTab({
     });
     return sortLeads(f, sort);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [leads, statusFilter, countyFilter, localityFilter, interestedOnly, followupOnly, mineOnly, actor, requirePhone, requireReviews, requirePhotos, sort]);
+  }, [leads, statusFilter, countyFilter, localityFilter, interestedOnly, mineOnly, actor, requirePhone, requireReviews, requirePhotos, sort]);
 
   function exportCsv() {
     const rows = [
@@ -735,22 +800,20 @@ function SavedTab({
   }
 
   const counts = useMemo(() => {
-    const c: Record<string, number> = { all: leads?.length ?? 0, interested: 0, followup: 0 };
+    const c: Record<string, number> = { all: leads?.length ?? 0, interested: 0 };
     for (const l of leads ?? []) {
       c[l.status] = (c[l.status] ?? 0) + 1;
       if (l.interested) c.interested += 1;
-      if (needsFollowup(l)) c.followup += 1;
     }
     return c;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [leads]);
 
   return (
     <>
-      {/* MAIN filter: location (county → locality) */}
+      {/* Filters: zone first (the main one), then quality toggles */}
       <div className="bg-white/[0.03] border border-white/10 rounded-xl p-4 mb-4">
-        <p className="text-xs text-white/40 mb-2">📍 Filtru pe zonă</p>
-        <div className="flex flex-wrap gap-2 items-center">
+        <p className="text-xs text-white/40 mb-2">📍 Zonă</p>
+        <div className="flex flex-wrap gap-2 items-center mb-3.5 pb-3.5 border-b border-white/10">
           <select
             value={countyFilter}
             onChange={(e) => { setCountyFilter(e.target.value); setLocalityFilter("all"); }}
@@ -776,10 +839,7 @@ function SavedTab({
             </button>
           )}
         </div>
-      </div>
-
-      <div className="mb-4">
-        <p className="text-xs text-white/35 mb-2">Calitate (verde = activ):</p>
+        <p className="text-xs text-white/35 mb-2">Calitate (verde = activ)</p>
         <div className="flex flex-wrap gap-2.5">
           <Toggle on={requirePhone} onClick={() => setRequirePhone((v) => !v)} label="Doar cu telefon" />
           <Toggle on={requireReviews} onClick={() => setRequireReviews((v) => !v)} label="Doar cu recenzii" />
@@ -790,23 +850,19 @@ function SavedTab({
 
       <div className="flex items-center justify-between gap-3 mb-4 flex-wrap">
         <div className="flex flex-wrap gap-2">
-          <FilterPill active={statusFilter === "all" && !interestedOnly && !followupOnly} onClick={() => { setStatusFilter("all"); setInterestedOnly(false); setFollowupOnly(false); }}>
+          <FilterPill active={statusFilter === "all" && !interestedOnly} onClick={() => { setStatusFilter("all"); setInterestedOnly(false); }}>
             Toate ({counts.all ?? 0})
           </FilterPill>
-          <FilterPill active={interestedOnly} onClick={() => { setInterestedOnly((v) => !v); setFollowupOnly(false); }}>
+          <FilterPill active={interestedOnly} onClick={() => setInterestedOnly((v) => !v)}>
             ★ De contactat ({counts.interested ?? 0})
-          </FilterPill>
-          <FilterPill active={followupOnly} onClick={() => { setFollowupOnly((v) => !v); setInterestedOnly(false); }}>
-            ⏰ De urmărit ({counts.followup ?? 0})
           </FilterPill>
           {(["new", "contacted", "client", "skip"] as LeadStatus[]).map((s) => (
             <FilterPill
               key={s}
-              active={statusFilter === s && !interestedOnly && !followupOnly}
+              active={statusFilter === s && !interestedOnly}
               onClick={() => {
                 setStatusFilter(s);
                 setInterestedOnly(false);
-                setFollowupOnly(false);
                 // The contacted list is most useful chronologically — the
                 // one you just reached out to should be on top.
                 if (s === "contacted") setSort("recent");
@@ -831,20 +887,26 @@ function SavedTab({
       {showTemplate && (
         <div className="bg-white/[0.03] border border-white/10 rounded-xl p-4 mb-4">
           <label className="block text-xs text-white/40 mb-1.5">
-            Mesajul trimis pe WhatsApp. Folosește <code className="text-emerald-300">{"{nume}"}</code> pentru numele afacerii și{" "}
-            <code className="text-emerald-300">{"{tip}"}</code> pentru tipul ei (ex: „pensiunea", „cabana", „hotelul" — se adaptează automat după locul respectiv).
+            Mesajul trimis pe WhatsApp — partajat între voi, salvat automat. Folosește{" "}
+            <code className="text-emerald-300">{"{nume}"}</code> pentru numele afacerii,{" "}
+            <code className="text-emerald-300">{"{tip}"}</code> pentru tipul ei (ex: „pensiunea", „cabana", „hotelul") și{" "}
+            <code className="text-emerald-300">{"{eu}"}</code> pentru numele tău (completat automat după cine e logat).
+            {templateBy && <span className="text-white/30"> Ultima modificare: {templateBy}.</span>}
           </label>
           <textarea
-            value={template}
-            onChange={(e) => setTemplate(e.target.value)}
-            rows={4}
+            value={templateDraft}
+            onChange={(e) => setTemplateDraft(e.target.value)}
+            onBlur={() => {
+              if (templateDraft !== template) onSaveTemplate(templateDraft);
+            }}
+            rows={8}
             className="w-full bg-black/30 border border-white/10 rounded-lg px-3 py-2.5 outline-none focus:border-white/30 text-sm resize-none"
           />
-          {(!template.includes("{nume}") || !template.includes("{tip}")) && (
+          {(!templateDraft.includes("{nume}") || !templateDraft.includes("{tip}")) && (
             <p className="text-xs text-amber-300 mt-1.5">
-              ⚠️ Lipsește {!template.includes("{nume}") && <code>{"{nume}"}</code>}
-              {!template.includes("{nume}") && !template.includes("{tip}") && " și "}
-              {!template.includes("{tip}") && <code>{"{tip}"}</code>} din mesaj — se va trimite neînlocuit.
+              ⚠️ Lipsește {!templateDraft.includes("{nume}") && <code>{"{nume}"}</code>}
+              {!templateDraft.includes("{nume}") && !templateDraft.includes("{tip}") && " și "}
+              {!templateDraft.includes("{tip}") && <code>{"{tip}"}</code>} din mesaj — se va trimite neînlocuit.
             </p>
           )}
         </div>
@@ -1063,7 +1125,7 @@ function LeadCard({
   }
 
   function openWhatsApp() {
-    openWhatsAppApp(lead.whatsapp, fillTemplate(template, { name: lead.name, pitchType }));
+    openWhatsAppApp(lead.whatsapp, fillTemplate(template, { name: lead.name, pitchType }, actor));
     if (actor) patch({ claim: true });
     // Opening the app isn't the same as sending — ask before marking it.
     if (lead.status === "new") setConfirmSend(true);
@@ -1307,7 +1369,7 @@ function ContactStepper({
   // does that explicitly, once you're sure.
   function whatsapp() {
     if (!lead) return;
-    openWhatsAppApp(lead.whatsapp, fillTemplate(template, { name: lead.name, pitchType }));
+    openWhatsAppApp(lead.whatsapp, fillTemplate(template, { name: lead.name, pitchType }, actor));
     if (actor) patch({ claim: true });
   }
 
@@ -1354,8 +1416,8 @@ function ContactStepper({
               <PitchTypeSelect value={pitchType} onChange={changePitchType} />
             </div>
             <p className="text-xs text-white/35 mb-1">Mesaj care se va trimite:</p>
-            <p className="text-sm text-white/60 bg-black/30 border border-white/10 rounded-lg p-3 mb-4">
-              {fillTemplate(template, { name: lead.name, pitchType })}
+            <p className="text-sm text-white/60 bg-black/30 border border-white/10 rounded-lg p-3 mb-4 whitespace-pre-line">
+              {fillTemplate(template, { name: lead.name, pitchType }, actor)}
             </p>
 
             <div className="flex gap-2 flex-wrap">

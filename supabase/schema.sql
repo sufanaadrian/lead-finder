@@ -49,21 +49,35 @@ create table if not exists searches (
   found integer not null default 0
 );
 
+-- Shared key/value settings, edited from the app. First (only) use so far:
+-- the WhatsApp message template, so both of you edit the same text instead
+-- of each keeping a local copy.
+create table if not exists app_settings (
+  key text primary key,
+  value text not null default '',
+  updated_at timestamptz not null default now(),
+  updated_by text
+);
+
 -- Row Level Security: the app's API routes use the service role key, which
 -- always bypasses RLS, so they keep working unchanged. Browser code only
--- gets the public anon key (for the live Realtime subscription below), so it
--- needs an explicit read-only policy on `leads` — and nothing on the other
--- two tables, which the browser never touches directly.
+-- gets the public anon key (for the live Realtime subscriptions below), so
+-- it needs explicit read-only policies on `leads` and `app_settings` — and
+-- nothing on the other two tables, which the browser never touches directly.
 alter table leads enable row level security;
 alter table usage_counters enable row level security;
 alter table searches enable row level security;
+alter table app_settings enable row level security;
 
 drop policy if exists "anon can read leads" on leads;
 create policy "anon can read leads" on leads for select using (true);
 
--- Publish `leads` changes so the browser can subscribe live (this is what
--- lets two people see each other's status updates without polling). Guarded
--- so re-running this whole script doesn't error on "already a member".
+drop policy if exists "anon can read app_settings" on app_settings;
+create policy "anon can read app_settings" on app_settings for select using (true);
+
+-- Publish changes on these tables so the browser can subscribe live (this is
+-- what lets two people see each other's updates without polling). Guarded so
+-- re-running this whole script doesn't error on "already a member".
 do $$
 begin
   if not exists (
@@ -71,6 +85,12 @@ begin
     where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'leads'
   ) then
     alter publication supabase_realtime add table leads;
+  end if;
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'app_settings'
+  ) then
+    alter publication supabase_realtime add table app_settings;
   end if;
 end $$;
 
