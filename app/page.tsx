@@ -2,8 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import dynamic from "next/dynamic";
-import type { LeadStatus, SearchRecord, SearchResult, StoredLead } from "@/lib/types";
-import { STATUS_LABELS, scoreLead } from "@/lib/types";
+import type { LeadStatus, PitchType, SearchRecord, SearchResult, StoredLead } from "@/lib/types";
+import { PITCH_TYPES, PITCH_TYPE_LABELS, PITCH_TYPE_PHRASES, STATUS_LABELS, scoreLead } from "@/lib/types";
 
 // Leaflet touches `window` on import, so load the map only in the browser.
 const AreaPicker = dynamic(() => import("./AreaPicker"), {
@@ -24,7 +24,7 @@ const SORTS = [
 ] as const;
 type SortKey = (typeof SORTS)[number]["key"];
 
-function sortLeads<T extends { website: string; phone: string; reviewCount: number; photoCount: number; name: string; savedAt?: string }>(
+function sortLeads<T extends { phone: string; rating: number; reviewCount: number; photoCount: number; name: string; savedAt?: string; contactedAt?: string }>(
   list: T[],
   key: SortKey
 ): T[] {
@@ -35,7 +35,13 @@ function sortLeads<T extends { website: string; phone: string; reviewCount: numb
     case "name":
       return arr.sort((a, b) => a.name.localeCompare(b.name, "ro"));
     case "recent":
-      return arr.sort((a, b) => (a.savedAt && b.savedAt ? (a.savedAt < b.savedAt ? 1 : -1) : 0));
+      // Most recently CONTACTED first when that's known (so "the last one I
+      // reached out to" is on top); falls back to when it was first found.
+      return arr.sort((a, b) => {
+        const at = a.contactedAt || a.savedAt || "";
+        const bt = b.contactedAt || b.savedAt || "";
+        return at < bt ? 1 : at > bt ? -1 : 0;
+      });
     case "score":
     default:
       return arr.sort((a, b) => scoreLead(b) - scoreLead(a));
@@ -92,7 +98,14 @@ const DEPTHS = [
 ];
 
 const DEFAULT_TEMPLATE =
-  "Bună ziua! Am văzut {nume} pe Google și am observat că nu aveți încă un site web. Realizez site-uri pentru pensiuni și cabane și aș putea să vă fac unul frumos, rapid. V-ar interesa câteva detalii?";
+  "Bună ziua! Am văzut {tip} dumneavoastră, {nume}, pe Google și am observat că nu aveți încă un site web. Realizez site-uri pentru pensiuni și cabane și aș putea să vă fac unul frumos, rapid. V-ar interesa câteva detalii?";
+
+// Fills both {nume} and {tip} in one place so every WhatsApp send/preview
+// stays consistent. {tip} comes from the hand-picked pitchType (default
+// "pensiune") — guessing it from Google's place type turned out unreliable.
+function fillTemplate(template: string, lead: { name: string; pitchType?: PitchType }): string {
+  return template.replaceAll("{nume}", lead.name).replaceAll("{tip}", PITCH_TYPE_PHRASES[lead.pitchType ?? "pensiune"]);
+}
 
 // Soft warning threshold for daily API requests (the real cap is set in Google Cloud).
 const DAILY_WARN = 80;
@@ -530,11 +543,16 @@ function SavedTab({
   onChanged: () => void;
 }) {
   const [leads, setLeads] = useState<StoredLead[] | null>(null);
-  const [statusFilter, setStatusFilter] = useState<LeadStatus | "all">("all");
+  // Default to "new" — once a lead's contacted/skipped/a client, there's no
+  // point seeing it again every time the page loads.
+  const [statusFilter, setStatusFilter] = useState<LeadStatus | "all">("new");
   const [countyFilter, setCountyFilter] = useState<string>("all");
   const [localityFilter, setLocalityFilter] = useState<string>("all");
   const [interestedOnly, setInterestedOnly] = useState(false);
   const [followupOnly, setFollowupOnly] = useState(false);
+  const [requirePhone, setRequirePhone] = useState(true);
+  const [requireReviews, setRequireReviews] = useState(false);
+  const [requirePhotos, setRequirePhotos] = useState(false);
   const [sort, setSort] = useState<SortKey>("score");
   const [showTemplate, setShowTemplate] = useState(false);
   const [contactMode, setContactMode] = useState(false);
@@ -577,11 +595,14 @@ function SavedTab({
       if (localityFilter !== "all" && l.locality !== localityFilter) return false;
       if (interestedOnly && !l.interested) return false;
       if (followupOnly && !needsFollowup(l)) return false;
+      if (requirePhone && !l.phone) return false;
+      if (requireReviews && l.reviewCount <= 0) return false;
+      if (requirePhotos && l.photoCount <= 0) return false;
       return true;
     });
     return sortLeads(f, sort);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [leads, statusFilter, countyFilter, localityFilter, interestedOnly, followupOnly, sort]);
+  }, [leads, statusFilter, countyFilter, localityFilter, interestedOnly, followupOnly, requirePhone, requireReviews, requirePhotos, sort]);
 
   function exportCsv() {
     const rows = [
@@ -645,6 +666,15 @@ function SavedTab({
         </div>
       </div>
 
+      <div className="mb-4">
+        <p className="text-xs text-white/35 mb-2">Calitate (verde = activ):</p>
+        <div className="flex flex-wrap gap-2.5">
+          <Toggle on={requirePhone} onClick={() => setRequirePhone((v) => !v)} label="Doar cu telefon" />
+          <Toggle on={requireReviews} onClick={() => setRequireReviews((v) => !v)} label="Doar cu recenzii" />
+          <Toggle on={requirePhotos} onClick={() => setRequirePhotos((v) => !v)} label="Doar cu poze" />
+        </div>
+      </div>
+
       <div className="flex items-center justify-between gap-3 mb-4 flex-wrap">
         <div className="flex flex-wrap gap-2">
           <FilterPill active={statusFilter === "all" && !interestedOnly && !followupOnly} onClick={() => { setStatusFilter("all"); setInterestedOnly(false); setFollowupOnly(false); }}>
@@ -657,7 +687,18 @@ function SavedTab({
             ⏰ De urmărit ({counts.followup ?? 0})
           </FilterPill>
           {(["new", "contacted", "client", "skip"] as LeadStatus[]).map((s) => (
-            <FilterPill key={s} active={statusFilter === s && !interestedOnly && !followupOnly} onClick={() => { setStatusFilter(s); setInterestedOnly(false); setFollowupOnly(false); }}>
+            <FilterPill
+              key={s}
+              active={statusFilter === s && !interestedOnly && !followupOnly}
+              onClick={() => {
+                setStatusFilter(s);
+                setInterestedOnly(false);
+                setFollowupOnly(false);
+                // The contacted list is most useful chronologically — the
+                // one you just reached out to should be on top.
+                if (s === "contacted") setSort("recent");
+              }}
+            >
               {STATUS_LABELS[s]} ({counts[s] ?? 0})
             </FilterPill>
           ))}
@@ -677,7 +718,8 @@ function SavedTab({
       {showTemplate && (
         <div className="bg-white/[0.03] border border-white/10 rounded-xl p-4 mb-4">
           <label className="block text-xs text-white/40 mb-1.5">
-            Mesajul trimis pe WhatsApp. Folosește <code className="text-emerald-300">{"{nume}"}</code> pentru numele afacerii.
+            Mesajul trimis pe WhatsApp. Folosește <code className="text-emerald-300">{"{nume}"}</code> pentru numele afacerii și{" "}
+            <code className="text-emerald-300">{"{tip}"}</code> pentru tipul ei (ex: „pensiunea", „cabana", „hotelul" — se adaptează automat după locul respectiv).
           </label>
           <textarea
             value={template}
@@ -712,6 +754,7 @@ function SavedTab({
             template={template}
             onStatus={() => { load(); onChanged(); }}
             onInterested={() => { load(); }}
+            editableType
           />
         ))}
       </div>
@@ -789,6 +832,23 @@ function SortSelect({ value, onChange }: { value: SortKey; onChange: (k: SortKey
   );
 }
 
+// Which kind of place this is for the {tip} placeholder in the WhatsApp
+// message — picked by hand per lead (see lib/types.ts for why).
+function PitchTypeSelect({ value, onChange }: { value: PitchType; onChange: (t: PitchType) => void }) {
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value as PitchType)}
+      className="px-2 py-2 rounded-lg border border-white/15 bg-black/40 text-sm text-white/70 outline-none hover:bg-white/5"
+      title="Tipul folosit în mesaj ({tip})"
+    >
+      {PITCH_TYPES.map((t) => (
+        <option key={t} value={t} className="bg-zinc-900">{PITCH_TYPE_LABELS[t]}</option>
+      ))}
+    </select>
+  );
+}
+
 const STATUS_STYLE: Record<LeadStatus, string> = {
   new: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30",
   contacted: "bg-sky-500/15 text-sky-300 border-sky-500/30",
@@ -809,7 +869,7 @@ type CardLead = {
   id: string; name: string; address: string; phone: string; whatsapp: string; website: string;
   rating: number; reviewCount: number; photoCount: number; mapsUri: string; status: LeadStatus;
   lat?: number; lng?: number; locality?: string; county?: string; typeLabel?: string; primaryType?: string;
-  interested?: boolean;
+  interested?: boolean; pitchType?: PitchType;
 };
 
 function LeadCard({
@@ -818,15 +878,21 @@ function LeadCard({
   template,
   onStatus,
   onInterested,
+  editableType = false,
 }: {
   lead: CardLead;
   known: boolean;
   template: string;
   onStatus: (s: LeadStatus) => void;
   onInterested?: (v: boolean) => void;
+  editableType?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [interested, setInterested] = useState(!!lead.interested);
+  const [pitchType, setPitchType] = useState<PitchType>(lead.pitchType ?? "pensiune");
+  // After opening WhatsApp, ask before marking contacted — opening the app
+  // doesn't mean the message actually got sent.
+  const [confirmSend, setConfirmSend] = useState(false);
 
   async function patch(body: Record<string, unknown>) {
     try {
@@ -850,9 +916,20 @@ function LeadCard({
     patch({ interested: v });
   }
 
+  function changePitchType(t: PitchType) {
+    setPitchType(t);
+    patch({ pitchType: t });
+  }
+
   function openWhatsApp() {
-    openWhatsAppApp(lead.whatsapp, template.replaceAll("{nume}", lead.name));
-    if (lead.status === "new") setStatus("contacted");
+    openWhatsAppApp(lead.whatsapp, fillTemplate(template, { name: lead.name, pitchType }));
+    // Opening the app isn't the same as sending — ask before marking it.
+    if (lead.status === "new") setConfirmSend(true);
+  }
+
+  function markSent() {
+    setStatus("contacted");
+    setConfirmSend(false);
   }
 
   return (
@@ -891,10 +968,21 @@ function LeadCard({
         </div>
 
         <div className="flex flex-wrap gap-2 shrink-0">
+          {editableType && <PitchTypeSelect value={pitchType} onChange={changePitchType} />}
           {lead.whatsapp && (
             <button onClick={openWhatsApp} className="px-3 py-2 rounded-lg bg-emerald-500 text-black text-sm font-medium hover:bg-emerald-400 transition-colors">
               WhatsApp
             </button>
+          )}
+          {lead.mapsUri && (
+            <a
+              href={lead.mapsUri}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="px-3 py-2 rounded-lg border border-white/15 text-sm hover:bg-white/5 transition-colors"
+            >
+              Maps ↗
+            </a>
           )}
           <button
             onClick={() => setExpanded((v) => !v)}
@@ -916,6 +1004,18 @@ function LeadCard({
           </select>
         </div>
       </div>
+
+      {confirmSend && lead.status === "new" && (
+        <div className="mt-3 flex items-center gap-2 flex-wrap text-sm bg-amber-500/10 border border-amber-500/30 rounded-lg px-3 py-2">
+          <span className="text-amber-200/90">Ai trimis mesajul?</span>
+          <button onClick={markSent} className="px-2.5 py-1 rounded-md bg-emerald-500 text-black text-xs font-medium hover:bg-emerald-400">
+            ✓ Da, marchează contactat
+          </button>
+          <button onClick={() => setConfirmSend(false)} className="px-2.5 py-1 rounded-md border border-white/15 text-xs text-white/60 hover:bg-white/5">
+            Nu
+          </button>
+        </div>
+      )}
 
       {expanded && (
         <div className="mt-4 pt-4 border-t border-white/10 grid md:grid-cols-2 gap-4">
@@ -994,6 +1094,11 @@ function ContactStepper({
 }) {
   const [i, setI] = useState(0);
   const lead = leads[i];
+  const [pitchType, setPitchType] = useState<PitchType>(lead?.pitchType ?? "pensiune");
+  // Reset the picker to this lead's own saved type whenever we move to a new one.
+  useEffect(() => {
+    setPitchType(lead?.pitchType ?? "pensiune");
+  }, [lead?.id]);
 
   async function patch(body: Record<string, unknown>) {
     if (!lead) return;
@@ -1006,13 +1111,24 @@ function ContactStepper({
     } catch {}
   }
 
+  function changePitchType(t: PitchType) {
+    setPitchType(t);
+    patch({ pitchType: t });
+  }
+
   function next() {
     setI((v) => v + 1);
   }
 
+  // Opening WhatsApp doesn't mean the message was actually sent, so it no
+  // longer marks the lead contacted or advances on its own — "✓ Am trimis"
+  // does that explicitly, once you're sure.
   function whatsapp() {
     if (!lead) return;
-    openWhatsAppApp(lead.whatsapp, template.replaceAll("{nume}", lead.name));
+    openWhatsAppApp(lead.whatsapp, fillTemplate(template, { name: lead.name, pitchType }));
+  }
+
+  function markSent() {
     patch({ status: "contacted" });
     next();
   }
@@ -1049,19 +1165,26 @@ function ContactStepper({
               </div>
             </div>
 
+            <div className="flex items-center gap-2 mb-1">
+              <p className="text-xs text-white/35">Tip (pentru mesaj):</p>
+              <PitchTypeSelect value={pitchType} onChange={changePitchType} />
+            </div>
             <p className="text-xs text-white/35 mb-1">Mesaj care se va trimite:</p>
             <p className="text-sm text-white/60 bg-black/30 border border-white/10 rounded-lg p-3 mb-4">
-              {template.replaceAll("{nume}", lead.name)}
+              {fillTemplate(template, { name: lead.name, pitchType })}
             </p>
 
-            <div className="flex gap-2">
+            <div className="flex gap-2 flex-wrap">
               {lead.whatsapp ? (
                 <button onClick={whatsapp} className="flex-1 px-4 py-3 rounded-lg bg-emerald-500 text-black font-semibold hover:bg-emerald-400">
-                  WhatsApp + următorul →
+                  WhatsApp
                 </button>
               ) : (
                 <span className="flex-1 px-4 py-3 rounded-lg bg-white/5 text-white/30 text-center text-sm">fără număr</span>
               )}
+              <button onClick={markSent} className="px-4 py-3 rounded-lg border border-emerald-500/40 text-emerald-300 text-sm font-medium hover:bg-emerald-500/10" title="Confirmă că ai trimis mesajul și treci la următorul">
+                ✓ Am trimis →
+              </button>
               <button onClick={() => { patch({ status: "skip" }); next(); }} className="px-4 py-3 rounded-lg border border-white/15 text-sm hover:bg-white/5" title="Ignoră">
                 Ignoră
               </button>

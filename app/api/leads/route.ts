@@ -1,9 +1,10 @@
 // Read and update the saved leads (the local "CRM").
 //   GET   /api/leads            -> all saved leads + today's API usage
-//   PATCH /api/leads            -> { id, status?, note? } update one lead
+//   PATCH /api/leads            -> { id, status?, note?, interested?, pitchType? } update one lead
 
 import { getAllLeads, updateLead, getUsageToday, getSearches, purgeWebsiteLeads, countLeadsMissingGeo } from "@/lib/db";
-import type { LeadStatus } from "@/lib/types";
+import { PITCH_TYPES } from "@/lib/types";
+import type { LeadStatus, PitchType } from "@/lib/types";
 
 const VALID_STATUS: LeadStatus[] = ["new", "contacted", "client", "skip"];
 
@@ -19,7 +20,7 @@ export async function GET() {
 }
 
 export async function PATCH(req: Request) {
-  let body: { id?: string; status?: LeadStatus; note?: string; interested?: boolean };
+  let body: { id?: string; status?: LeadStatus; note?: string; interested?: boolean; pitchType?: PitchType };
   try {
     body = await req.json();
   } catch {
@@ -32,11 +33,15 @@ export async function PATCH(req: Request) {
   if (body.status !== undefined && !VALID_STATUS.includes(body.status)) {
     return Response.json({ error: "Status invalid." }, { status: 400 });
   }
+  if (body.pitchType !== undefined && !PITCH_TYPES.includes(body.pitchType)) {
+    return Response.json({ error: "Tip invalid." }, { status: 400 });
+  }
 
   const updated = updateLead(body.id, {
     status: body.status,
     note: body.note,
     interested: body.interested,
+    pitchType: body.pitchType,
   });
   if (!updated) {
     return Response.json({ error: "Lead inexistent." }, { status: 404 });

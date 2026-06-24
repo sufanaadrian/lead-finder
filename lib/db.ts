@@ -4,7 +4,7 @@
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
 import path from "path";
-import type { Lead, LeadStatus, SearchRecord, StoredLead } from "./types";
+import type { Lead, LeadStatus, PitchType, SearchRecord, StoredLead } from "./types";
 
 const DB_PATH = path.join(process.cwd(), "data", "db.json");
 
@@ -160,11 +160,11 @@ export function getExistingStatuses(ids: string[]): Record<string, LeadStatus> {
   return out;
 }
 
-// Updates a single lead's status and/or note. Stamps contactedAt the first time
-// it moves to "contacted".
+// Updates a single lead's status/note/pitch type. Stamps contactedAt the
+// first time it moves to "contacted".
 export function updateLead(
   id: string,
-  patch: { status?: LeadStatus; note?: string; interested?: boolean }
+  patch: { status?: LeadStatus; note?: string; interested?: boolean; pitchType?: PitchType }
 ): StoredLead | null {
   const db = readDb();
   const lead = db.leads[id];
@@ -177,6 +177,7 @@ export function updateLead(
   }
   if (patch.note !== undefined) lead.note = patch.note;
   if (patch.interested !== undefined) lead.interested = patch.interested;
+  if (patch.pitchType !== undefined) lead.pitchType = patch.pitchType;
   db.leads[id] = lead;
   writeDb(db);
   return lead;
