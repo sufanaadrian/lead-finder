@@ -10,11 +10,11 @@ import { getActor, setActor, USERS } from "@/lib/identity";
 // Leaflet touches `window` on import, so load the map only in the browser.
 const AreaPicker = dynamic(() => import("./AreaPicker"), {
   ssr: false,
-  loading: () => <div className="w-full h-80 rounded-lg bg-white/[0.03] border border-white/10 grid place-items-center text-white/30 text-sm">Se încarcă harta…</div>,
+  loading: () => <div className="w-full h-[clamp(28rem,72vh,46rem)] rounded-lg bg-white/[0.03] border border-white/10 grid place-items-center text-white/30 text-sm">Se încarcă harta…</div>,
 });
 const CoverageMap = dynamic(() => import("./CoverageMap"), {
   ssr: false,
-  loading: () => <div className="w-full h-96 rounded-lg bg-white/[0.03] border border-white/10 grid place-items-center text-white/30 text-sm">Se încarcă harta…</div>,
+  loading: () => <div className="w-full h-[32rem] rounded-lg bg-white/[0.03] border border-white/10 grid place-items-center text-white/30 text-sm">Se încarcă harta…</div>,
 });
 
 // Sort options shared by Search results and the Saved list.
@@ -555,27 +555,31 @@ function SearchTab({ template, actor, onUsage }: { template: string; actor: stri
             />
           ) : (
             <div>
-              <AreaPicker
-                center={center}
-                radiusKm={radiusKm}
-                onPick={(lat, lng) => setCenter({ lat, lng })}
-                heatPoints={coverage.points}
-                pastCircles={coverage.circles}
-                pastRects={coverage.rects}
-              />
-              <div className="flex items-center gap-3 mt-2 flex-wrap">
-                <label className="text-xs text-white/40">Rază: <strong className="text-white/70">{radiusKm} km</strong></label>
-                <input
-                  type="range"
-                  min={1}
-                  max={40}
-                  value={radiusKm}
-                  onChange={(e) => setRadiusKm(Number(e.target.value))}
-                  className="flex-1 min-w-40 accent-emerald-400"
+              <div className="relative">
+                <AreaPicker
+                  center={center}
+                  radiusKm={radiusKm}
+                  onPick={(lat, lng) => setCenter({ lat, lng })}
+                  heatPoints={coverage.points}
+                  pastCircles={coverage.circles}
+                  pastRects={coverage.rects}
                 />
-                <span className="text-xs text-white/35">
-                  {center ? `Centru: ${center.lat.toFixed(3)}, ${center.lng.toFixed(3)}` : "Apasă pe hartă pentru a alege centrul"}
-                </span>
+                <div className="absolute top-3 right-3 z-[1000] w-48 bg-black/75 backdrop-blur border border-white/15 rounded-xl px-3 py-2.5 shadow-lg">
+                  <label className="text-xs text-white/60 block mb-1.5">
+                    Rază: <strong className="text-white">{radiusKm} km</strong>
+                  </label>
+                  <input
+                    type="range"
+                    min={1}
+                    max={40}
+                    value={radiusKm}
+                    onChange={(e) => setRadiusKm(Number(e.target.value))}
+                    className="w-full accent-emerald-400"
+                  />
+                  <p className="text-[11px] text-white/40 mt-1.5">
+                    {center ? `${center.lat.toFixed(3)}, ${center.lng.toFixed(3)}` : "Apasă pe hartă pentru centru"}
+                  </p>
+                </div>
               </div>
               <p className="text-[11px] text-white/30 mt-1.5">
                 Zonele colorate = locuri găsite deja (heatmap); cercurile albastre = zone căutate anterior.

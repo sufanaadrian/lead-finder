@@ -12,6 +12,7 @@
 import "leaflet/dist/leaflet.css";
 import { MapContainer, TileLayer, Circle, CircleMarker, Rectangle, useMapEvents } from "react-leaflet";
 import { HeatLayer, type HeatPoint, type AreaCircle, type AreaRect } from "./HeatLayer";
+import { CountyLayer } from "./CountyLayer";
 
 function ClickHandler({ onPick }: { onPick: (lat: number, lng: number) => void }) {
   useMapEvents({
@@ -45,20 +46,22 @@ export default function AreaPicker({
       center={initial}
       zoom={center ? 11 : 7}
       scrollWheelZoom
-      className="w-full h-80 rounded-lg"
-      style={{ height: "20rem" }}
+      className="w-full h-[clamp(28rem,72vh,46rem)] rounded-lg"
+      style={{ height: "clamp(28rem,72vh,46rem)" }}
     >
       <TileLayer
-        attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+        attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
         url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+        maxZoom={19}
       />
+      <CountyLayer />
       <HeatLayer points={heatPoints} />
       {pastCircles.map((c, i) => (
         <Circle
           key={`pc${i}`}
           center={[c.lat, c.lng]}
           radius={c.radiusKm * 1000}
-          pathOptions={{ color: "#0ea5e9", weight: 1, fillColor: "#0ea5e9", fillOpacity: 0.05 }}
+          pathOptions={{ color: "#0ea5e9", weight: 2, fillColor: "#0ea5e9", fillOpacity: 0.12 }}
         />
       ))}
       {pastRects.map((r, i) => (
@@ -68,7 +71,7 @@ export default function AreaPicker({
             [r.minLat, r.minLng],
             [r.maxLat, r.maxLng],
           ]}
-          pathOptions={{ color: "#0ea5e9", weight: 1, fillColor: "#0ea5e9", fillOpacity: 0.04 }}
+          pathOptions={{ color: "#0ea5e9", weight: 2, fillColor: "#0ea5e9", fillOpacity: 0.1 }}
         />
       ))}
       <ClickHandler onPick={onPick} />

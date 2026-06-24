@@ -19,8 +19,14 @@ export function HeatLayer({ points }: { points: HeatPoint[] }) {
     if (!points.length) return;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const layer = (L as any).heatLayer(
-      points.map((p) => [p.lat, p.lng, 0.7]),
-      { radius: 28, blur: 22, maxZoom: 12, gradient: { 0.3: "#22d3ee", 0.6: "#3b82f6", 1: "#a855f7" } }
+      points.map((p) => [p.lat, p.lng, 0.5]),
+      {
+        radius: 20,
+        blur: 16,
+        maxZoom: 12,
+        max: 1.4, // headroom so a single point reads as a soft glow, not a solid blob covering labels
+        gradient: { 0.3: "rgba(34,211,238,0.5)", 0.6: "rgba(59,130,246,0.6)", 1: "rgba(168,85,247,0.7)" },
+      }
     );
     layer.addTo(map);
     return () => {

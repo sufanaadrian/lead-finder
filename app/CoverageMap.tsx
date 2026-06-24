@@ -10,6 +10,7 @@
 import "leaflet/dist/leaflet.css";
 import { MapContainer, TileLayer, Circle, Rectangle } from "react-leaflet";
 import { HeatLayer, type HeatPoint, type AreaCircle, type AreaRect } from "./HeatLayer";
+import { CountyLayer } from "./CountyLayer";
 
 export type { HeatPoint, AreaCircle, AreaRect };
 
@@ -32,18 +33,20 @@ export default function CoverageMap({
     : [45.9, 25.0];
 
   return (
-    <MapContainer center={center} zoom={all.length ? 8 : 7} scrollWheelZoom className="w-full h-96 rounded-lg" style={{ height: "26rem" }}>
+    <MapContainer center={center} zoom={all.length ? 8 : 7} scrollWheelZoom className="w-full h-[32rem] rounded-lg" style={{ height: "32rem" }}>
       <TileLayer
-        attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+        attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
         url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+        maxZoom={19}
       />
+      <CountyLayer />
       <HeatLayer points={points} />
       {circles.map((c, i) => (
         <Circle
           key={`c${i}`}
           center={[c.lat, c.lng]}
           radius={c.radiusKm * 1000}
-          pathOptions={{ color: "#10b981", weight: 1, fillColor: "#10b981", fillOpacity: 0.08 }}
+          pathOptions={{ color: "#10b981", weight: 2, fillColor: "#10b981", fillOpacity: 0.15 }}
         />
       ))}
       {rects.map((r, i) => (
@@ -53,7 +56,7 @@ export default function CoverageMap({
             [r.minLat, r.minLng],
             [r.maxLat, r.maxLng],
           ]}
-          pathOptions={{ color: "#0ea5e9", weight: 1, fillColor: "#0ea5e9", fillOpacity: 0.06 }}
+          pathOptions={{ color: "#0ea5e9", weight: 2, fillColor: "#0ea5e9", fillOpacity: 0.12 }}
         />
       ))}
     </MapContainer>
