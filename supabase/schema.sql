@@ -31,7 +31,13 @@ create table if not exists leads (
   claimed_at timestamptz,
   contacted_by text,
   note_by text,
-  assigned_to text
+  assigned_to text,
+  -- All Google place types for this place (lib/groups.ts derives `groups`
+  -- from this) and the business verticals it matches. `groups` can hold more
+  -- than one — a guesthouse that also runs a restaurant shows up under both
+  -- Turism and Restaurante regardless of which one's search found it first.
+  types text[] not null default '{}',
+  groups text[] not null default '{turism}'
 );
 
 create table if not exists usage_counters (
@@ -43,6 +49,8 @@ create table if not exists searches (
   id bigserial primary key,
   at timestamptz not null default now(),
   terms text[] not null default '{}',
+  -- "group" is a reserved SQL keyword, hence group_key.
+  group_key text not null default 'turism',
   location text,
   area jsonb,
   bounds jsonb,
@@ -106,14 +114,16 @@ begin
   insert into leads (
     id, name, address, phone, whatsapp, website, rating, review_count,
     photo_count, maps_uri, lat, lng, locality, county, primary_type,
-    type_label, first_query
+    type_label, first_query, types, groups
   )
   select
     x->>'id', x->>'name', x->>'address', x->>'phone', x->>'whatsapp', x->>'website',
     coalesce((x->>'rating')::numeric, 0), coalesce((x->>'reviewCount')::int, 0),
     coalesce((x->>'photoCount')::int, 0), x->>'mapsUri',
     (x->>'lat')::double precision, (x->>'lng')::double precision,
-    x->>'locality', x->>'county', x->>'primaryType', x->>'typeLabel', x->>'firstQuery'
+    x->>'locality', x->>'county', x->>'primaryType', x->>'typeLabel', x->>'firstQuery',
+    ARRAY(SELECT jsonb_array_elements_text(x->'types')),
+    ARRAY(SELECT jsonb_array_elements_text(x->'groups'))
   from jsonb_array_elements(payload) as x
   on conflict (id) do update set
     name = excluded.name,
@@ -130,7 +140,12 @@ begin
     locality = excluded.locality,
     county = excluded.county,
     primary_type = excluded.primary_type,
-    type_label = excluded.type_label;
+    type_label = excluded.type_label,
+    types = excluded.types,
+    -- Union, never shrink: a place keeps every group it's ever matched, so
+    -- re-discovering it under a different vertical adds to its group list
+    -- instead of replacing it (see lib/groups.ts groupsForTypes).
+    groups = (SELECT array_agg(DISTINCT v) FROM unnest(leads.groups || excluded.groups) v);
 end;
 $$;
 

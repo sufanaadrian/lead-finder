@@ -2,7 +2,8 @@
 // shared live between everyone using the app, instead of a local file.
 
 import { getSupabaseAdmin } from "./supabaseAdmin";
-import type { Lead, LeadStatus, PitchType, SearchRecord, StoredLead } from "./types";
+import type { Group, Lead, LeadStatus, SearchRecord, StoredLead } from "./types";
+import { DEFAULT_GROUP } from "./types";
 
 type LeadRow = {
   id: string;
@@ -21,6 +22,8 @@ type LeadRow = {
   county: string | null;
   primary_type: string | null;
   type_label: string | null;
+  types: string[] | null;
+  groups: string[] | null;
   status: LeadStatus;
   interested: boolean;
   note: string;
@@ -28,7 +31,7 @@ type LeadRow = {
   contacted_at: string | null;
   first_query: string;
   geo_tried: boolean;
-  pitch_type: PitchType | null;
+  pitch_type: string | null;
   claimed_by: string | null;
   claimed_at: string | null;
   contacted_by: string | null;
@@ -54,6 +57,8 @@ function rowToLead(r: LeadRow): StoredLead {
     county: r.county ?? undefined,
     primaryType: r.primary_type ?? undefined,
     typeLabel: r.type_label ?? undefined,
+    types: r.types ?? [],
+    groups: (r.groups?.length ? r.groups : [DEFAULT_GROUP]) as Group[],
     status: r.status,
     interested: r.interested,
     note: r.note,
@@ -129,6 +134,7 @@ export async function recordSearch(rec: SearchRecord): Promise<void> {
   const { error } = await supabaseAdmin.from("searches").insert({
     at: rec.at,
     terms: rec.terms,
+    group_key: rec.group,
     location: rec.location,
     area: rec.area,
     bounds: rec.bounds,
@@ -141,11 +147,20 @@ export async function getSearches(): Promise<SearchRecord[]> {
   const supabaseAdmin = getSupabaseAdmin();
   const { data, error } = await supabaseAdmin
     .from("searches")
-    .select("at, terms, location, area, bounds, found")
+    .select("at, terms, group_key, location, area, bounds, found")
     .order("at", { ascending: false })
     .limit(200);
   if (error) throw error;
-  return data as SearchRecord[];
+  type SearchRow = { at: string; terms: string[]; group_key: string | null; location: string | null; area: SearchRecord["area"]; bounds: SearchRecord["bounds"]; found: number };
+  return (data as SearchRow[]).map((row) => ({
+    at: row.at,
+    terms: row.terms,
+    group: (row.group_key ?? DEFAULT_GROUP) as Group,
+    location: row.location ?? undefined,
+    area: row.area ?? undefined,
+    bounds: row.bounds ?? undefined,
+    found: row.found,
+  }));
 }
 
 // Removes any leads that have a website — this tool only cares about places
@@ -191,28 +206,34 @@ export async function setLeadGeo(
   if (error) throw error;
 }
 
-const TEMPLATE_KEY = "wa_template";
+// Each group gets its own template, stored under its own key in the generic
+// app_settings k/v table (no schema change needed for this). Turism keeps
+// the original "wa_template" key so nobody's already-saved message is lost
+// by this feature.
+function templateKey(group: Group): string {
+  return group === DEFAULT_GROUP ? "wa_template" : `wa_template:${group}`;
+}
 
 // The shared WhatsApp message template, editable from either of your
 // devices (see app_settings in supabase/schema.sql). Returns null if nobody
 // has saved one yet — the caller falls back to its own built-in default.
-export async function getTemplate(): Promise<{ value: string; updatedBy?: string } | null> {
+export async function getTemplate(group: Group): Promise<{ value: string; updatedBy?: string } | null> {
   const supabaseAdmin = getSupabaseAdmin();
   const { data, error } = await supabaseAdmin
     .from("app_settings")
     .select("value, updated_by")
-    .eq("key", TEMPLATE_KEY)
+    .eq("key", templateKey(group))
     .maybeSingle();
   if (error) throw error;
   if (!data) return null;
   return { value: data.value, updatedBy: data.updated_by ?? undefined };
 }
 
-export async function setTemplate(value: string, actor?: string): Promise<void> {
+export async function setTemplate(value: string, group: Group, actor?: string): Promise<void> {
   const supabaseAdmin = getSupabaseAdmin();
   const { error } = await supabaseAdmin
     .from("app_settings")
-    .upsert({ key: TEMPLATE_KEY, value, updated_by: actor ?? null, updated_at: new Date().toISOString() });
+    .upsert({ key: templateKey(group), value, updated_by: actor ?? null, updated_at: new Date().toISOString() });
   if (error) throw error;
 }
 
@@ -238,7 +259,7 @@ export async function updateLead(
     status?: LeadStatus;
     note?: string;
     interested?: boolean;
-    pitchType?: PitchType;
+    pitchType?: string;
     assignedTo?: string | null;
     claim?: boolean;
     actor?: string;

@@ -3,8 +3,7 @@
 //   PATCH /api/leads            -> { id, status?, note?, interested?, pitchType?, assignedTo?, claim?, actor? } update one lead
 
 import { getAllLeads, updateLead, getUsageToday, getSearches, purgeWebsiteLeads, countLeadsMissingGeo } from "@/lib/db";
-import { PITCH_TYPES } from "@/lib/types";
-import type { LeadStatus, PitchType } from "@/lib/types";
+import type { LeadStatus } from "@/lib/types";
 
 const VALID_STATUS: LeadStatus[] = ["new", "contacted", "client", "skip"];
 
@@ -26,7 +25,7 @@ export async function PATCH(req: Request) {
     status?: LeadStatus;
     note?: string;
     interested?: boolean;
-    pitchType?: PitchType;
+    pitchType?: string;
     assignedTo?: string | null;
     claim?: boolean;
     actor?: string;
@@ -43,7 +42,7 @@ export async function PATCH(req: Request) {
   if (body.status !== undefined && !VALID_STATUS.includes(body.status)) {
     return Response.json({ error: "Status invalid." }, { status: 400 });
   }
-  if (body.pitchType !== undefined && !PITCH_TYPES.includes(body.pitchType)) {
+  if (body.pitchType !== undefined && typeof body.pitchType !== "string") {
     return Response.json({ error: "Tip invalid." }, { status: 400 });
   }
 

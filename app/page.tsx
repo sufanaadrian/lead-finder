@@ -2,8 +2,17 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import dynamic from "next/dynamic";
-import type { LeadStatus, PitchType, SearchRecord, SearchResult, StoredLead } from "@/lib/types";
-import { PITCH_TYPES, PITCH_TYPE_LABELS, PITCH_TYPE_PHRASES, STATUS_LABELS, scoreLead } from "@/lib/types";
+import type { Group, LeadStatus, SearchRecord, SearchResult, StoredLead } from "@/lib/types";
+import { DEFAULT_GROUP, GROUPS, GROUP_LABELS, STATUS_LABELS, scoreLead } from "@/lib/types";
+import {
+  GROUP_TERMS,
+  GROUP_DEFAULT_TEMPLATE,
+  GROUP_PITCH_OPTIONS,
+  GROUP_DEFAULT_PITCH,
+  pitchPhraseFor,
+  getStoredGroup,
+  setStoredGroup,
+} from "@/lib/groups";
 import { supabaseClient } from "@/lib/supabaseClient";
 import { getActor, setActor, USERS } from "@/lib/identity";
 
@@ -74,19 +83,6 @@ function openWhatsAppApp(phone: string, message: string) {
   a.remove();
 }
 
-const TYPE_OPTIONS = [
-  "pensiune",
-  "cabană",
-  "casă de vacanță",
-  "hotel",
-  "vilă",
-  "motel",
-  "hostel",
-  "camping",
-  "a-frame",
-  "bungalow",
-];
-
 // Pages of 20 results per zonă (tile). Google hard-caps a single query at 3
 // pages (60 results) — raising this past 3 wouldn't get more back. Coverage
 // beyond that comes from tiling large areas into many small zones server-side
@@ -97,18 +93,16 @@ const DEPTHS = [
   { label: "Complet", pages: 3 },
 ];
 
-const DEFAULT_TEMPLATE =
-  "Bună ziua!\n\nMă numesc {eu} și sunt dezvoltator web. Am observat {tip} dumneavoastră ({nume}) și m-am gândit să vă contactez deoarece realizez site-uri pentru pensiuni și cabane.\n\nRecent am finalizat câteva proiecte similare chiar in Jina, și cred că un site propriu poate fi util pentru prezentarea locației și o vizibilitate mai buna.\n\nDacă vă interesează, vă pot trimite câteva exemple de site-uri realizate de mine.";
-
 // Fills {nume}, {tip} and {eu} in one place so every WhatsApp send/preview
-// stays consistent. {tip} comes from the hand-picked pitchType (default
-// "pensiune") — guessing it from Google's place type turned out unreliable.
+// stays consistent. {tip} comes from the hand-picked pitchType, scoped to
+// whichever group the message is being sent from (see pitchPhraseFor in
+// lib/groups.ts) — guessing it from Google's place type turned out unreliable.
 // {eu} comes from whoever is logged in (see lib/identity.ts), so the message
 // signs itself correctly regardless of who's sending it.
-function fillTemplate(template: string, lead: { name: string; pitchType?: PitchType }, actor?: string): string {
+function fillTemplate(template: string, lead: { name: string; pitchType?: string }, actor: string | undefined, group: Group): string {
   return template
     .replaceAll("{nume}", lead.name)
-    .replaceAll("{tip}", PITCH_TYPE_PHRASES[lead.pitchType ?? "pensiune"])
+    .replaceAll("{tip}", pitchPhraseFor(group, lead.pitchType))
     .replaceAll("{eu}", actor || "Adrian");
 }
 
@@ -147,22 +141,37 @@ type Tab = "search" | "saved" | "dashboard";
 
 export default function Home() {
   const [tab, setTab] = useState<Tab>("search");
+  // Which business vertical is active — scopes search/saved/dashboard and the
+  // WhatsApp template everywhere. Starts at the default (turism) on the
+  // server/first paint, then hydrates from localStorage once mounted, same
+  // pattern as the actor below.
+  const [group, setGroupState] = useState<Group>(DEFAULT_GROUP);
   const [usageToday, setUsageToday] = useState<number | null>(null);
-  const [template, setTemplate] = useState(DEFAULT_TEMPLATE);
+  const [template, setTemplate] = useState(GROUP_DEFAULT_TEMPLATE[DEFAULT_GROUP]);
   const [templateBy, setTemplateBy] = useState<string | undefined>();
   const [actor, setActorState] = useState("");
   const [pickerOpen, setPickerOpen] = useState(false);
 
+  useEffect(() => {
+    setGroupState(getStoredGroup());
+  }, []);
+  function setGroup(g: Group) {
+    setGroupState(g);
+    setStoredGroup(g);
+  }
+
   // The WhatsApp template is shared (app_settings table) so either of you
-  // editing it updates the other live, instead of each keeping a local copy.
+  // editing it updates the other live, instead of each keeping a local copy —
+  // and it's scoped per group, so switching groups loads that group's own
+  // saved template (or its built-in default if nobody's saved one yet).
   const loadTemplate = useCallback(async () => {
     try {
-      const res = await fetch("/api/settings");
+      const res = await fetch(`/api/settings?group=${group}`);
       const data = await res.json();
-      if (data.template) setTemplate(data.template);
+      setTemplate(data.template || GROUP_DEFAULT_TEMPLATE[group]);
       setTemplateBy(data.updatedBy);
     } catch {}
-  }, []);
+  }, [group]);
   useEffect(() => {
     loadTemplate();
   }, [loadTemplate]);
@@ -185,7 +194,7 @@ export default function Home() {
       await fetch("/api/settings", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ template: value, actor: actor || undefined }),
+        body: JSON.stringify({ template: value, group, actor: actor || undefined }),
       });
     } catch {}
   }
@@ -222,7 +231,7 @@ export default function Home() {
         <div className="flex items-baseline gap-2 min-w-0">
           <h1 className="text-lg font-bold tracking-tight shrink-0">Lead Finder</h1>
           <p className="text-xs text-white/40 truncate hidden sm:block">
-            Pensiuni, cabane și hoteluri fără website — gata de contactat.
+            {GROUP_LABELS[group]} fără website — gata de contactat.
           </p>
         </div>
         <div className="flex items-center gap-2 shrink-0">
@@ -231,17 +240,31 @@ export default function Home() {
         </div>
       </header>
 
+      <div className="flex gap-1.5 mb-5 overflow-x-auto pb-1">
+        {GROUPS.map((g) => (
+          <button
+            key={g}
+            onClick={() => setGroup(g)}
+            className={`shrink-0 text-sm px-3.5 py-2 rounded-xl border whitespace-nowrap transition-colors ${
+              group === g ? "bg-emerald-500/20 border-emerald-400/60 text-emerald-200" : "border-white/10 text-white/50 hover:text-white/80"
+            }`}
+          >
+            {GROUP_LABELS[g]}
+          </button>
+        ))}
+      </div>
+
       <div className="flex gap-1 mb-6 bg-white/[0.03] border border-white/10 rounded-xl p-1">
         <TabBtn icon="🔍" active={tab === "search"} onClick={() => setTab("search")}>Căutare</TabBtn>
         <TabBtn icon="📋" active={tab === "saved"} onClick={() => setTab("saved")}>Salvate</TabBtn>
         <TabBtn icon="📊" active={tab === "dashboard"} onClick={() => setTab("dashboard")}>Tablou</TabBtn>
       </div>
 
-      {tab === "search" && <SearchTab template={template} actor={actor} onUsage={setUsageToday} />}
+      {tab === "search" && <SearchTab group={group} template={template} actor={actor} onUsage={setUsageToday} />}
       {tab === "saved" && (
-        <SavedTab template={template} templateBy={templateBy} onSaveTemplate={saveTemplate} actor={actor} onChanged={refreshUsage} />
+        <SavedTab group={group} template={template} templateBy={templateBy} onSaveTemplate={saveTemplate} actor={actor} onChanged={refreshUsage} />
       )}
-      {tab === "dashboard" && <Dashboard />}
+      {tab === "dashboard" && <Dashboard group={group} />}
 
       {pickerOpen && (
         <ActorPicker current={actor} onSelect={saveActor} onClose={actor ? () => setPickerOpen(false) : undefined} />
@@ -340,8 +363,18 @@ function TabBtn({
 
 /* ---------------------------------------------------------------- Search tab */
 
-function SearchTab({ template, actor, onUsage }: { template: string; actor: string; onUsage: (n: number) => void }) {
-  const [types, setTypes] = useState<string[]>(["pensiune"]);
+function SearchTab({
+  group,
+  template,
+  actor,
+  onUsage,
+}: {
+  group: Group;
+  template: string;
+  actor: string;
+  onUsage: (n: number) => void;
+}) {
+  const [types, setTypes] = useState<string[]>([GROUP_TERMS[group][0]]);
   const [customType, setCustomType] = useState("");
   const [location, setLocation] = useState("");
   const [areaMode, setAreaMode] = useState<"text" | "map">("text");
@@ -369,12 +402,22 @@ function SearchTab({ template, actor, onUsage }: { template: string; actor: stri
     try {
       const res = await fetch("/api/leads");
       const data = await res.json();
-      setCoverage(computeCoverage(data.leads ?? [], data.searches ?? []));
+      const leads = (data.leads ?? []).filter((l: StoredLead) => l.groups.includes(group));
+      const searches = (data.searches ?? []).filter((s: SearchRecord) => s.group === group);
+      setCoverage(computeCoverage(leads, searches));
     } catch {}
-  }, []);
+  }, [group]);
   useEffect(() => {
     loadCoverage();
   }, [loadCoverage]);
+
+  // Switching groups starts a fresh search: different vocabulary, different
+  // results — keeping the old ones around would be confusing/wrong.
+  useEffect(() => {
+    setTypes([GROUP_TERMS[group][0]]);
+    setResults(null);
+    setQuery("");
+  }, [group]);
 
   const [requirePhone, setRequirePhone] = useState(true);
   const [requireReviews, setRequireReviews] = useState(false);
@@ -426,6 +469,7 @@ function SearchTab({ template, actor, onUsage }: { template: string; actor: stri
           location: useMap ? "" : location,
           area: useMap && center ? { lat: center.lat, lng: center.lng, radiusKm } : undefined,
           pages,
+          group,
         }),
       });
       const data = await res.json();
@@ -476,7 +520,7 @@ function SearchTab({ template, actor, onUsage }: { template: string; actor: stri
         {/* Property types — pick as many as you want */}
         <Field label="Ce tipuri caut (poți alege mai multe)">
           <div className="flex flex-wrap gap-2">
-            {TYPE_OPTIONS.map((t) => {
+            {GROUP_TERMS[group].map((t) => {
               const on = types.includes(t);
               return (
                 <button
@@ -493,7 +537,7 @@ function SearchTab({ template, actor, onUsage }: { template: string; actor: stri
             })}
             {/* Custom types added by the user */}
             {types
-              .filter((t) => !TYPE_OPTIONS.includes(t))
+              .filter((t) => !GROUP_TERMS[group].includes(t))
               .map((t) => (
                 <button
                   key={t}
@@ -587,7 +631,7 @@ function SearchTab({ template, actor, onUsage }: { template: string; actor: stri
             </div>
           )}
           <p className="text-[11px] text-white/30 mt-1.5">
-            Căutăm și după categorie (tip Google: cazare), nu doar după cuvânt — prinde și locurile cu nume neobișnuit sau în engleză (ex. „A-Frame", „Mountain Chalet"). Zonele mari sunt împărțite automat în zone mai mici, ca să nu rămânem blocați la limita Google de 60 de rezultate per cerere.
+            Căutăm și după categorie Google, nu doar după cuvânt — prinde și locurile cu nume neobișnuit sau în engleză. Zonele mari sunt împărțite automat în zone mai mici, ca să nu rămânem blocați la limita Google de 60 de rezultate per cerere.
           </p>
         </div>
 
@@ -665,6 +709,7 @@ function SearchTab({ template, actor, onUsage }: { template: string; actor: stri
             known={l.known}
             template={template}
             actor={actor}
+            group={group}
             onStatus={(s) => handleStatus(l.id, s)}
           />
         ))}
@@ -687,12 +732,14 @@ function SearchTab({ template, actor, onUsage }: { template: string; actor: stri
 /* ----------------------------------------------------------------- Saved tab */
 
 function SavedTab({
+  group,
   template,
   templateBy,
   onSaveTemplate,
   actor,
   onChanged,
 }: {
+  group: Group;
   template: string;
   templateBy?: string;
   onSaveTemplate: (t: string) => void;
@@ -751,26 +798,30 @@ function SavedTab({
     return () => clearInterval(id);
   }, []);
 
+  // Scopes the saved-leads view to whichever group is active. A lead can
+  // belong to several groups (see groupsForTypes in lib/groups.ts), so the
+  // same lead may legitimately show up here and in another group's list.
+  const groupLeads = useMemo(() => (leads ?? []).filter((l) => l.groups.includes(group)), [leads, group]);
+
   // Distinct counties, and localities within the chosen county, for the area filter.
   const counties = useMemo(() => {
     const set = new Set<string>();
-    for (const l of leads ?? []) if (l.county) set.add(l.county);
+    for (const l of groupLeads) if (l.county) set.add(l.county);
     return Array.from(set).sort();
-  }, [leads]);
+  }, [groupLeads]);
 
   const localities = useMemo(() => {
     const set = new Set<string>();
-    for (const l of leads ?? []) {
+    for (const l of groupLeads) {
       if (!l.locality) continue;
       if (countyFilter !== "all" && l.county !== countyFilter) continue;
       set.add(l.locality);
     }
     return Array.from(set).sort();
-  }, [leads, countyFilter]);
+  }, [groupLeads, countyFilter]);
 
   const filtered = useMemo(() => {
-    if (!leads) return [];
-    const f = leads.filter((l) => {
+    const f = groupLeads.filter((l) => {
       if (statusFilter !== "all" && l.status !== statusFilter) return false;
       if (countyFilter !== "all" && l.county !== countyFilter) return false;
       if (localityFilter !== "all" && l.locality !== localityFilter) return false;
@@ -783,14 +834,15 @@ function SavedTab({
     });
     return sortLeads(f, sort);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [leads, statusFilter, countyFilter, localityFilter, interestedOnly, mineOnly, actor, requirePhone, requireReviews, requirePhotos, sort]);
+  }, [groupLeads, statusFilter, countyFilter, localityFilter, interestedOnly, mineOnly, actor, requirePhone, requireReviews, requirePhotos, sort]);
 
   function exportCsv() {
     const rows = [
-      ["Nume", "Telefon", "Localitate", "Județ", "Adresă", "Status", "Interesat", "Recenzii", "Website", "Notă", "Google Maps"],
+      ["Nume", "Telefon", "Localitate", "Județ", "Adresă", "Status", "Interesat", "Recenzii", "Website", "Notă", "Google Maps", "Grupuri"],
       ...filtered.map((l) => [
         l.name, l.phone, l.locality || "", l.county || "", l.address, STATUS_LABELS[l.status],
         l.interested ? "da" : "", String(l.reviewCount), l.website || "—", l.note || "", l.mapsUri,
+        (l.groups || []).map((g) => GROUP_LABELS[g]).join("; "),
       ]),
     ];
     const csv = rows.map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
@@ -804,13 +856,13 @@ function SavedTab({
   }
 
   const counts = useMemo(() => {
-    const c: Record<string, number> = { all: leads?.length ?? 0, interested: 0 };
-    for (const l of leads ?? []) {
+    const c: Record<string, number> = { all: groupLeads.length, interested: 0 };
+    for (const l of groupLeads) {
       c[l.status] = (c[l.status] ?? 0) + 1;
       if (l.interested) c.interested += 1;
     }
     return c;
-  }, [leads]);
+  }, [groupLeads]);
 
   return (
     <>
@@ -939,6 +991,7 @@ function SavedTab({
             known={false}
             template={template}
             actor={actor}
+            group={group}
             onStatus={() => { load(); onChanged(); }}
             onInterested={() => { load(); }}
             onRefresh={load}
@@ -956,6 +1009,7 @@ function SavedTab({
           leads={filtered}
           template={template}
           actor={actor}
+          group={group}
           onClose={() => { setContactMode(false); load(); onChanged(); }}
         />
       )}
@@ -1022,17 +1076,19 @@ function SortSelect({ value, onChange }: { value: SortKey; onChange: (k: SortKey
 }
 
 // Which kind of place this is for the {tip} placeholder in the WhatsApp
-// message — picked by hand per lead (see lib/types.ts for why).
-function PitchTypeSelect({ value, onChange }: { value: PitchType; onChange: (t: PitchType) => void }) {
+// message — picked by hand per lead, options scoped to the active group
+// (see GROUP_PITCH_OPTIONS in lib/groups.ts).
+function PitchTypeSelect({ group, value, onChange }: { group: Group; value: string; onChange: (t: string) => void }) {
+  const options = GROUP_PITCH_OPTIONS[group];
   return (
     <select
       value={value}
-      onChange={(e) => onChange(e.target.value as PitchType)}
+      onChange={(e) => onChange(e.target.value)}
       className="px-2 py-2 rounded-lg border border-white/15 bg-black/40 text-sm text-white/70 outline-none hover:bg-white/5"
       title="Tipul folosit în mesaj ({tip})"
     >
-      {PITCH_TYPES.map((t) => (
-        <option key={t} value={t} className="bg-zinc-900">{PITCH_TYPE_LABELS[t]}</option>
+      {options.map((o) => (
+        <option key={o.value} value={o.value} className="bg-zinc-900">{o.label}</option>
       ))}
     </select>
   );
@@ -1058,7 +1114,7 @@ type CardLead = {
   id: string; name: string; address: string; phone: string; whatsapp: string; website: string;
   rating: number; reviewCount: number; photoCount: number; mapsUri: string; status: LeadStatus;
   lat?: number; lng?: number; locality?: string; county?: string; typeLabel?: string; primaryType?: string;
-  interested?: boolean; pitchType?: PitchType; note?: string;
+  interested?: boolean; pitchType?: string; note?: string; groups?: Group[];
   claimedBy?: string; claimedAt?: string; contactedBy?: string; noteBy?: string; assignedTo?: string;
 };
 
@@ -1067,6 +1123,7 @@ function LeadCard({
   known,
   template,
   actor,
+  group,
   onStatus,
   onInterested,
   onRefresh,
@@ -1076,6 +1133,7 @@ function LeadCard({
   known: boolean;
   template: string;
   actor: string;
+  group: Group;
   onStatus: (s: LeadStatus) => void;
   onInterested?: (v: boolean) => void;
   onRefresh?: () => void;
@@ -1083,7 +1141,7 @@ function LeadCard({
 }) {
   const [expanded, setExpanded] = useState(false);
   const [interested, setInterested] = useState(!!lead.interested);
-  const [pitchType, setPitchType] = useState<PitchType>(lead.pitchType ?? "pensiune");
+  const [pitchType, setPitchType] = useState<string>(lead.pitchType ?? GROUP_DEFAULT_PITCH[group]);
   const [note, setNote] = useState(lead.note ?? "");
   // After opening WhatsApp, ask before marking contacted — opening the app
   // doesn't mean the message actually got sent.
@@ -1111,7 +1169,7 @@ function LeadCard({
     patch({ interested: v });
   }
 
-  function changePitchType(t: PitchType) {
+  function changePitchType(t: string) {
     setPitchType(t);
     patch({ pitchType: t });
   }
@@ -1129,7 +1187,7 @@ function LeadCard({
   }
 
   function openWhatsApp() {
-    openWhatsAppApp(lead.whatsapp, fillTemplate(template, { name: lead.name, pitchType }, actor));
+    openWhatsAppApp(lead.whatsapp, fillTemplate(template, { name: lead.name, pitchType }, actor, group));
     if (actor) patch({ claim: true });
     // Opening the app isn't the same as sending — ask before marking it.
     if (lead.status === "new") setConfirmSend(true);
@@ -1169,6 +1227,14 @@ function LeadCard({
             {known && (
               <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/10 text-white/50 border border-white/15">deja salvat</span>
             )}
+            {lead.groups && lead.groups.length > 1 && (
+              <span
+                className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-500/15 text-indigo-300 border border-indigo-500/30"
+                title={lead.groups.map((g) => GROUP_LABELS[g]).join(", ")}
+              >
+                🔗 {lead.groups.length} categorii
+              </span>
+            )}
           </div>
           <p className="text-sm text-white/45 truncate">
             {lead.locality ? <span className="text-white/60">{lead.locality}</span> : null}
@@ -1182,7 +1248,7 @@ function LeadCard({
         </div>
 
         <div className="flex flex-wrap gap-2 shrink-0">
-          {editableType && <PitchTypeSelect value={pitchType} onChange={changePitchType} />}
+          {editableType && <PitchTypeSelect group={group} value={pitchType} onChange={changePitchType} />}
           {editableType && actor && (
             <button
               onClick={toggleAssign}
@@ -1329,20 +1395,23 @@ function ContactStepper({
   leads,
   template,
   actor,
+  group,
   onClose,
 }: {
   leads: StoredLead[];
   template: string;
   actor: string;
+  group: Group;
   onClose: () => void;
 }) {
   const [i, setI] = useState(0);
   const lead = leads[i];
-  const [pitchType, setPitchType] = useState<PitchType>(lead?.pitchType ?? "pensiune");
+  const [pitchType, setPitchType] = useState<string>(lead?.pitchType ?? GROUP_DEFAULT_PITCH[group]);
   // Reset the picker to this lead's own saved type whenever we move to a new one.
   useEffect(() => {
-    setPitchType(lead?.pitchType ?? "pensiune");
-  }, [lead?.id]);
+    setPitchType(lead?.pitchType ?? GROUP_DEFAULT_PITCH[group]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lead?.id, group]);
 
   async function patch(body: Record<string, unknown>) {
     if (!lead) return;
@@ -1355,7 +1424,7 @@ function ContactStepper({
     } catch {}
   }
 
-  function changePitchType(t: PitchType) {
+  function changePitchType(t: string) {
     setPitchType(t);
     patch({ pitchType: t });
   }
@@ -1373,7 +1442,7 @@ function ContactStepper({
   // does that explicitly, once you're sure.
   function whatsapp() {
     if (!lead) return;
-    openWhatsAppApp(lead.whatsapp, fillTemplate(template, { name: lead.name, pitchType }, actor));
+    openWhatsAppApp(lead.whatsapp, fillTemplate(template, { name: lead.name, pitchType }, actor, group));
     if (actor) patch({ claim: true });
   }
 
@@ -1417,11 +1486,11 @@ function ContactStepper({
 
             <div className="flex items-center gap-2 mb-1">
               <p className="text-xs text-white/35">Tip (pentru mesaj):</p>
-              <PitchTypeSelect value={pitchType} onChange={changePitchType} />
+              <PitchTypeSelect group={group} value={pitchType} onChange={changePitchType} />
             </div>
             <p className="text-xs text-white/35 mb-1">Mesaj care se va trimite:</p>
             <p className="text-sm text-white/60 bg-black/30 border border-white/10 rounded-lg p-3 mb-4 whitespace-pre-line">
-              {fillTemplate(template, { name: lead.name, pitchType }, actor)}
+              {fillTemplate(template, { name: lead.name, pitchType }, actor, group)}
             </p>
 
             <div className="flex gap-2 flex-wrap">
@@ -1456,7 +1525,7 @@ function ContactStepper({
 
 /* --------------------------------------------------------------- dashboard */
 
-function Dashboard() {
+function Dashboard({ group }: { group: Group }) {
   const [leads, setLeads] = useState<StoredLead[] | null>(null);
   const [searches, setSearches] = useState<SearchRecord[]>([]);
   const [missingGeo, setMissingGeo] = useState(0);
@@ -1491,20 +1560,25 @@ function Dashboard() {
     }
   }
 
+  // Scopes the dashboard to whichever group is active. `missingGeo` stays
+  // global/unscoped on purpose — geocoding backfill isn't a per-group concern.
+  const scopedLeads = useMemo(() => (leads ?? []).filter((l) => l.groups.includes(group)), [leads, group]);
+  const scopedSearches = useMemo(() => searches.filter((s) => s.group === group), [searches, group]);
+
   const totals = useMemo(() => {
     const t = { all: 0, new: 0, contacted: 0, client: 0, skip: 0, interested: 0 };
-    for (const l of leads ?? []) {
+    for (const l of scopedLeads) {
       t.all++;
       t[l.status]++;
       if (l.interested) t.interested++;
     }
     return t;
-  }, [leads]);
+  }, [scopedLeads]);
 
   // Per-county breakdown.
   const byArea = useMemo(() => {
     const map = new Map<string, { found: number; contacted: number; client: number }>();
-    for (const l of leads ?? []) {
+    for (const l of scopedLeads) {
       const key = l.county || "necunoscut";
       const e = map.get(key) ?? { found: 0, contacted: 0, client: 0 };
       e.found++;
@@ -1513,11 +1587,11 @@ function Dashboard() {
       map.set(key, e);
     }
     return Array.from(map.entries()).sort((a, b) => b[1].found - a[1].found);
-  }, [leads]);
+  }, [scopedLeads]);
 
   // Same coverage data shown live on the search map — heatmap points (every
   // lead with coordinates) plus shaded searched zones.
-  const { points, circles, rects } = useMemo(() => computeCoverage(leads ?? [], searches), [leads, searches]);
+  const { points, circles, rects } = useMemo(() => computeCoverage(scopedLeads, scopedSearches), [scopedLeads, scopedSearches]);
   const hasCoverage = points.length > 0 || circles.length > 0 || rects.length > 0;
 
   if (!leads) return <p className="text-white/30 text-center py-12">Se încarcă…</p>;

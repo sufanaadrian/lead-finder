@@ -1,5 +1,24 @@
 // Shared types used by the API routes, the database layer, and the UI.
 
+// Business vertical a lead belongs to — search terms, Google place-type
+// mappings, WhatsApp pitch wording and templates are all scoped per group
+// (see lib/groups.ts). A lead can belong to more than one (e.g. a guesthouse
+// that also runs a restaurant), computed from Google's own classification
+// rather than from which group tab you happened to search from.
+export type Group = "turism" | "restaurante" | "evenimente" | "constructii" | "beauty";
+
+export const GROUPS: Group[] = ["turism", "restaurante", "evenimente", "constructii", "beauty"];
+
+export const GROUP_LABELS: Record<Group, string> = {
+  turism: "🏡 Turism & Cazare",
+  restaurante: "🍽️ Restaurante & Cafenele",
+  evenimente: "🎉 Evenimente & Distracție",
+  constructii: "🏗️ Construcții & Amenajări",
+  beauty: "💇 Beauty & Wellness",
+};
+
+export const DEFAULT_GROUP: Group = "turism";
+
 export type Lead = {
   id: string;
   name: string;
@@ -17,6 +36,8 @@ export type Lead = {
   county?: string; // județ
   primaryType?: string; // raw Google type, e.g. "guest_house"
   typeLabel?: string; // localized label, e.g. "Pensiune"
+  types: string[]; // all Google place types for this place (primaryType plus the rest)
+  groups: Group[]; // which business verticals this place matches — see lib/groups.ts groupsForTypes()
 };
 
 export type LeadStatus = "new" | "contacted" | "client" | "skip";
@@ -28,30 +49,6 @@ export const STATUS_LABELS: Record<LeadStatus, string> = {
   skip: "Ignorat",
 };
 
-// What kind of place this is for the purposes of the WhatsApp pitch — picked
-// by hand per lead, not guessed from Google's classification (that turned
-// out unreliable: Google's primaryType often doesn't match how you'd
-// actually describe the place to its owner). Defaults to "pensiune".
-export type PitchType = "pensiune" | "cabana" | "chalet" | "hotel";
-
-export const PITCH_TYPES: PitchType[] = ["pensiune", "cabana", "chalet", "hotel"];
-
-export const PITCH_TYPE_LABELS: Record<PitchType, string> = {
-  pensiune: "Pensiune",
-  cabana: "Cabană",
-  chalet: "Chalet",
-  hotel: "Hotel",
-};
-
-// The Romanian phrase (definite article already attached) slotted into the
-// WhatsApp template's {tip} placeholder — e.g. "Am observat {tip} dumneavoastră".
-export const PITCH_TYPE_PHRASES: Record<PitchType, string> = {
-  pensiune: "pensiunea",
-  cabana: "cabana",
-  chalet: "chalet-ul",
-  hotel: "hotelul",
-};
-
 // A lead as kept in the local database — the scraped data plus our own notes.
 export type StoredLead = Lead & {
   status: LeadStatus;
@@ -61,7 +58,11 @@ export type StoredLead = Lead & {
   contactedAt?: string;
   firstQuery: string;
   geoTried?: boolean; // we've attempted to fill locality/county (avoid retrying forever)
-  pitchType?: PitchType; // hand-picked, defaults to "pensiune" when unset
+  // Hand-picked kind of place for the WhatsApp {tip} placeholder — a free
+  // string scoped to whichever group it was set under (see
+  // GROUP_PITCH_OPTIONS in lib/groups.ts), not a single global enum, since
+  // "pensiune" means nothing for a hair salon.
+  pitchType?: string;
   claimedBy?: string; // who last opened WhatsApp for this lead (soft lock, see ClaimBanner)
   claimedAt?: string;
   contactedBy?: string; // who actually sent the first message
@@ -80,6 +81,7 @@ export type SearchResult = Lead & {
 export type SearchRecord = {
   at: string;
   terms: string[];
+  group: Group;
   location?: string;
   area?: { lat: number; lng: number; radiusKm: number };
   bounds?: { minLat: number; maxLat: number; minLng: number; maxLng: number };

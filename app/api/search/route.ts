@@ -12,7 +12,9 @@
 // the exact same tiling path as a map-picked area.
 
 import { recordUsage, upsertLeads, getExistingStatuses, recordSearch } from "@/lib/db";
-import type { Lead, SearchResult } from "@/lib/types";
+import { categoryTypesForGroup, groupsForTypes } from "@/lib/groups";
+import type { Group, Lead, SearchResult } from "@/lib/types";
+import { DEFAULT_GROUP, GROUPS } from "@/lib/types";
 
 // A "Complet" search tiles a large area into many parallel tile/term
 // queries, each possibly paginating with a required 1.5s delay between
@@ -23,59 +25,6 @@ const SEARCH_URL = "https://places.googleapis.com/v1/places:searchText";
 const NEARBY_URL = "https://places.googleapis.com/v1/places:searchNearby";
 const GEOCODE_URL = "https://nominatim.openstreetmap.org/search";
 const NOMINATIM_UA = { "User-Agent": "lead-finder/1.0 (local lead tool)" };
-
-// Lodging-related Google place types — used for category search so we catch
-// places regardless of how they're named (English, "A-frame", etc.). This is
-// the fallback set for custom/unrecognized search terms; known terms use the
-// narrower mapping below instead.
-const LODGING_TYPES = [
-  "lodging",
-  "bed_and_breakfast",
-  "guest_house",
-  "cottage",
-  "hotel",
-  "motel",
-  "hostel",
-  "inn",
-  "resort_hotel",
-  "extended_stay_hotel",
-  "farmstay",
-  "campground",
-  "camping_cabin",
-  "rv_park",
-];
-
-// Which Google place types best match each known search term — keeps the
-// category (Nearby) search scoped to what was actually asked for, instead of
-// always pulling in every lodging type. Without this, a "camping" search
-// would also surface random city hotels just because they share the broad
-// "lodging" category — exactly the kind of noise (e.g. generic city listings
-// that will never want a custom site) we want to avoid. Unrecognized/custom
-// terms fall back to the full LODGING_TYPES list so we never miss something
-// obscure.
-const TERM_TYPE_HINTS: Record<string, string[]> = {
-  "pensiune": ["guest_house", "bed_and_breakfast", "farmstay", "inn", "cottage"],
-  "cabană": ["cottage", "camping_cabin", "lodging"],
-  "casă de vacanță": ["cottage", "lodging", "farmstay"],
-  "hotel": ["hotel", "resort_hotel", "extended_stay_hotel"],
-  "vilă": ["cottage", "lodging"],
-  "motel": ["motel"],
-  "hostel": ["hostel"],
-  "camping": ["campground", "camping_cabin", "rv_park"],
-  "a-frame": ["cottage", "camping_cabin", "lodging"],
-  "bungalow": ["cottage", "camping_cabin", "lodging"],
-};
-
-// Union of place types for the category search, scoped to the chosen terms.
-// If any selected term isn't in the hint map (a custom type), we can't be
-// sure what it means, so we stay broad rather than risk missing matches.
-function categoryTypesFor(terms: string[]): string[] {
-  const hints = terms.map((t) => TERM_TYPE_HINTS[t.toLowerCase()]);
-  if (hints.some((h) => !h)) return LODGING_TYPES;
-  const union = new Set<string>();
-  for (const h of hints) for (const t of h!) union.add(t);
-  return Array.from(union);
-}
 
 // Fields we ask Google for. Keep this tight — phone & website are billed at a
 // higher SKU, but they're exactly what we need, so it's worth it.
@@ -94,6 +43,7 @@ const PLACE_FIELDS = [
   "places.addressComponents",
   "places.primaryType",
   "places.primaryTypeDisplayName",
+  "places.types",
 ];
 const FIELD_MASK = [...PLACE_FIELDS, "nextPageToken"].join(",");
 const NEARBY_FIELD_MASK = PLACE_FIELDS.join(","); // Nearby has no pagination
@@ -115,6 +65,7 @@ type GooglePlace = {
   addressComponents?: AddressComponent[];
   primaryType?: string;
   primaryTypeDisplayName?: { text?: string };
+  types?: string[];
 };
 
 function pickComponent(components: AddressComponent[] | undefined, type: string): string {
@@ -122,12 +73,18 @@ function pickComponent(components: AddressComponent[] | undefined, type: string)
   return c?.longText || c?.shortText || "";
 }
 
-function normalize(p: GooglePlace): Lead {
+// `fallbackGroup` (whichever group is currently being searched from) is only
+// used when Google's own types don't overlap any group's vocabulary at all —
+// otherwise membership is derived purely from `types` (see groupsForTypes in
+// lib/groups.ts), so a place's groups never flip depending on which tab found it.
+function normalize(p: GooglePlace, fallbackGroup: Group): Lead {
   const intl = p.internationalPhoneNumber || "";
   const locality =
     pickComponent(p.addressComponents, "locality") ||
     pickComponent(p.addressComponents, "administrative_area_level_2") ||
     pickComponent(p.addressComponents, "postal_town");
+  const types = p.types || [];
+  const groups = groupsForTypes(types);
   return {
     id: p.id || crypto.randomUUID(),
     name: p.displayName?.text || "(fără nume)",
@@ -145,6 +102,8 @@ function normalize(p: GooglePlace): Lead {
     county: pickComponent(p.addressComponents, "administrative_area_level_1"),
     primaryType: p.primaryType || "",
     typeLabel: p.primaryTypeDisplayName?.text || "",
+    types,
+    groups: groups.length ? groups : [fallbackGroup],
   };
 }
 
@@ -162,6 +121,7 @@ async function searchOneTerm(
   textQuery: string,
   maxPages: number,
   apiKey: string,
+  group: Group,
   restriction?: Rectangle
 ): Promise<{ leads: Lead[]; requests: number; error?: string }> {
   const leads: Lead[] = [];
@@ -197,7 +157,7 @@ async function searchOneTerm(
     }
 
     const data: { places?: GooglePlace[]; nextPageToken?: string } = await res.json();
-    for (const p of data.places || []) leads.push(normalize(p));
+    for (const p of data.places || []) leads.push(normalize(p, group));
 
     pageToken = data.nextPageToken;
     if (!pageToken) break;
@@ -215,7 +175,8 @@ async function searchNearbyCategory(
   lng: number,
   radiusKm: number,
   apiKey: string,
-  types: string[]
+  types: string[],
+  group: Group
 ): Promise<{ leads: Lead[]; requests: number; error?: string }> {
   let res: Response;
   try {
@@ -247,7 +208,7 @@ async function searchNearbyCategory(
     return { leads: [], requests: 1, error: `Eroare Nearby (${res.status}). ${detail.slice(0, 200)}` };
   }
   const data: { places?: GooglePlace[] } = await res.json();
-  return { leads: (data.places || []).map(normalize), requests: 1 };
+  return { leads: (data.places || []).map((p) => normalize(p, group)), requests: 1 };
 }
 
 // Distance in km between two lat/lng points (haversine).
@@ -363,12 +324,18 @@ export async function POST(req: Request) {
     location?: string;
     pages?: number;
     area?: { lat?: number; lng?: number; radiusKm?: number };
+    group?: string;
   };
   try {
     body = await req.json();
   } catch {
     return Response.json({ error: "Cerere invalidă." }, { status: 400 });
   }
+
+  // Guards against missing/invalid values from older cached clients.
+  const group: Group = (GROUPS as string[]).includes(body.group || "")
+    ? (body.group as Group)
+    : DEFAULT_GROUP;
 
   // Accept a list of types; fall back to the single `term` for compatibility.
   const rawTerms = body.terms ?? (body.term ? [body.term] : []);
@@ -416,7 +383,7 @@ export async function POST(req: Request) {
   }
 
   const tiles = effectiveArea ? tilesFor(effectiveArea.lat, effectiveArea.lng, effectiveArea.radiusKm) : [];
-  const categoryTypes = categoryTypesFor(terms);
+  const categoryTypes = categoryTypesForGroup(group, terms);
 
   // With an effective area we tile it and, per tile, query each term AND run
   // a category (Nearby) search scoped to the chosen terms — this catches
@@ -428,12 +395,12 @@ export async function POST(req: Request) {
         tiles.flatMap((tile) => {
           const rect = circleToRectangle(tile.lat, tile.lng, tile.radiusKm);
           return [
-            ...terms.map((t) => searchOneTerm(t, maxPages, apiKey, rect)),
-            searchNearbyCategory(tile.lat, tile.lng, tile.radiusKm, apiKey, categoryTypes),
+            ...terms.map((t) => searchOneTerm(t, maxPages, apiKey, group, rect)),
+            searchNearbyCategory(tile.lat, tile.lng, tile.radiusKm, apiKey, categoryTypes, group),
           ];
         })
       )
-    : await Promise.all(terms.map((t) => searchOneTerm(`${t} ${location}`, maxPages, apiKey)));
+    : await Promise.all(terms.map((t) => searchOneTerm(`${t} ${location}`, maxPages, apiKey, group)));
 
   // Merge + dedup across all tiles/types by stable place id.
   const found: Lead[] = [];
@@ -491,6 +458,7 @@ export async function POST(req: Request) {
   await recordSearch({
     at: new Date().toISOString(),
     terms,
+    group,
     location: effectiveArea ? undefined : location,
     area: effectiveArea ?? undefined,
     bounds,
