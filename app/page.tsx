@@ -759,7 +759,6 @@ function SavedTab({
   const [countyFilter, setCountyFilter] = useState<string>("all");
   const [localityFilter, setLocalityFilter] = useState<string>("all");
   const [interestedOnly, setInterestedOnly] = useState(false);
-  const [mineOnly, setMineOnly] = useState(false);
   const [requirePhone, setRequirePhone] = useState(true);
   const [requireReviews, setRequireReviews] = useState(false);
   const [requirePhotos, setRequirePhotos] = useState(false);
@@ -826,15 +825,13 @@ function SavedTab({
       if (countyFilter !== "all" && l.county !== countyFilter) return false;
       if (localityFilter !== "all" && l.locality !== localityFilter) return false;
       if (interestedOnly && !l.interested) return false;
-      if (mineOnly && l.assignedTo !== actor) return false;
       if (requirePhone && !l.phone) return false;
       if (requireReviews && l.reviewCount <= 0) return false;
       if (requirePhotos && l.photoCount <= 0) return false;
       return true;
     });
     return sortLeads(f, sort);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [groupLeads, statusFilter, countyFilter, localityFilter, interestedOnly, mineOnly, actor, requirePhone, requireReviews, requirePhotos, sort]);
+  }, [groupLeads, statusFilter, countyFilter, localityFilter, interestedOnly, requirePhone, requireReviews, requirePhotos, sort]);
 
   function exportCsv() {
     const rows = [
@@ -900,19 +897,21 @@ function SavedTab({
           <Toggle on={requirePhone} onClick={() => setRequirePhone((v) => !v)} label="Doar cu telefon" />
           <Toggle on={requireReviews} onClick={() => setRequireReviews((v) => !v)} label="Doar cu recenzii" />
           <Toggle on={requirePhotos} onClick={() => setRequirePhotos((v) => !v)} label="Doar cu poze" />
-          {actor && <Toggle on={mineOnly} onClick={() => setMineOnly((v) => !v)} label="👤 Doar ale mele" />}
         </div>
       </div>
 
-      <div className="flex items-center justify-between gap-3 mb-4 flex-wrap">
-        <div className="flex flex-wrap gap-2">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
+        <div className="flex gap-2 overflow-x-auto pb-1 sm:pb-0">
           <FilterPill active={statusFilter === "all" && !interestedOnly} onClick={() => { setStatusFilter("all"); setInterestedOnly(false); }}>
             Toate ({counts.all ?? 0})
+          </FilterPill>
+          <FilterPill active={statusFilter === "new" && !interestedOnly} onClick={() => { setStatusFilter("new"); setInterestedOnly(false); }}>
+            {STATUS_LABELS.new} ({counts.new ?? 0})
           </FilterPill>
           <FilterPill active={interestedOnly} onClick={() => setInterestedOnly((v) => !v)}>
             ★ De contactat ({counts.interested ?? 0})
           </FilterPill>
-          {(["new", "contacted", "client", "skip"] as LeadStatus[]).map((s) => (
+          {(["contacted", "client", "skip"] as LeadStatus[]).map((s) => (
             <FilterPill
               key={s}
               active={statusFilter === s && !interestedOnly}
@@ -928,7 +927,7 @@ function SavedTab({
             </FilterPill>
           ))}
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 shrink-0">
           <button onClick={() => setShowTemplate((v) => !v)} className="text-sm px-4 py-2 rounded-lg border border-white/15 hover:bg-white/5 transition-colors">
             ✏️ Mesaj
           </button>
@@ -1049,7 +1048,7 @@ function FilterPill({ active, onClick, children }: { active: boolean; onClick: (
   return (
     <button
       onClick={onClick}
-      className={`text-sm px-3 py-1.5 rounded-lg border transition-colors ${
+      className={`shrink-0 whitespace-nowrap text-sm px-3 py-1.5 rounded-lg border transition-colors ${
         active ? "bg-white/15 border-white/30 text-white" : "border-white/10 text-white/45 hover:text-white/70"
       }`}
     >
@@ -1181,11 +1180,6 @@ function LeadCard({
     }
   }
 
-  function toggleAssign() {
-    patch({ assignedTo: lead.assignedTo === actor ? null : actor });
-    onRefresh?.();
-  }
-
   function openWhatsApp() {
     openWhatsAppApp(lead.whatsapp, fillTemplate(template, { name: lead.name, pitchType }, actor, group));
     if (actor) patch({ claim: true });
@@ -1200,18 +1194,19 @@ function LeadCard({
 
   return (
     <div className={`bg-white/[0.03] border rounded-xl p-4 transition-colors ${expanded ? "border-white/25" : "border-white/10"}`}>
-      <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+      <div className="flex items-start gap-3">
         <button
           onClick={toggleInterested}
           title={interested ? "Scoate din listă" : "Adaugă la lista de contactat"}
-          className={`text-xl leading-none shrink-0 transition-colors ${interested ? "text-amber-400" : "text-white/20 hover:text-white/50"}`}
+          className={`text-xl leading-none shrink-0 mt-0.5 transition-colors ${interested ? "text-amber-400" : "text-white/20 hover:text-white/50"}`}
         >
           {interested ? "★" : "☆"}
         </button>
 
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            <h3 className="font-semibold truncate">{lead.name}</h3>
+          <h3 className="font-semibold truncate">{lead.name}</h3>
+
+          <div className="flex items-center gap-1.5 flex-wrap mt-1">
             <span className={`text-[10px] px-1.5 py-0.5 rounded border ${STATUS_STYLE[lead.status]}`}>
               {STATUS_LABELS[lead.status]}
               {lead.contactedBy && (lead.status === "contacted" || lead.status === "client") ? ` · ${lead.contactedBy}` : ""}
@@ -1236,7 +1231,8 @@ function LeadCard({
               </span>
             )}
           </div>
-          <p className="text-sm text-white/45 truncate">
+
+          <p className="text-sm text-white/45 truncate mt-1">
             {lead.locality ? <span className="text-white/60">{lead.locality}</span> : null}
             {lead.locality ? " · " : ""}{lead.address}
           </p>
@@ -1246,22 +1242,26 @@ function LeadCard({
             <span>🖼 {lead.photoCount}</span>
           </div>
         </div>
+      </div>
 
-        <div className="flex flex-wrap gap-2 shrink-0">
+      {/* Actions: pickers on one row, buttons on the next — stays tidy on a phone */}
+      <div className="mt-3 pt-3 border-t border-white/10 flex flex-col gap-2">
+        <div className="flex flex-wrap gap-2">
           {editableType && <PitchTypeSelect group={group} value={pitchType} onChange={changePitchType} />}
-          {editableType && actor && (
-            <button
-              onClick={toggleAssign}
-              title={lead.assignedTo && lead.assignedTo !== actor ? `Alocat lui ${lead.assignedTo} — apasă pentru a-l aloca ție` : undefined}
-              className={`px-3 py-2 rounded-lg border text-sm transition-colors ${
-                lead.assignedTo === actor ? "bg-white/10 border-white/30 text-white" : "border-white/15 text-white/50 hover:bg-white/5"
-              }`}
-            >
-              {lead.assignedTo === actor ? "✓ Alocat ție" : "Alocă-mi"}
-            </button>
-          )}
+          <select
+            value={lead.status}
+            onChange={(e) => setStatus(e.target.value as LeadStatus)}
+            className="flex-1 min-w-[110px] px-2 py-2 rounded-lg border border-white/15 bg-black/40 text-sm text-white/70 outline-none hover:bg-white/5"
+            title="Schimbă statusul"
+          >
+            {(["new", "contacted", "client", "skip"] as LeadStatus[]).map((s) => (
+              <option key={s} value={s} className="bg-zinc-900">{STATUS_LABELS[s]}</option>
+            ))}
+          </select>
+        </div>
+        <div className="flex flex-wrap gap-2">
           {lead.whatsapp && (
-            <button onClick={openWhatsApp} className="px-3 py-2 rounded-lg bg-emerald-500 text-black text-sm font-medium hover:bg-emerald-400 transition-colors">
+            <button onClick={openWhatsApp} className="flex-1 min-w-[110px] px-3 py-2 rounded-lg bg-emerald-500 text-black text-sm font-medium hover:bg-emerald-400 transition-colors">
               WhatsApp
             </button>
           )}
@@ -1270,29 +1270,19 @@ function LeadCard({
               href={lead.mapsUri}
               target="_blank"
               rel="noopener noreferrer"
-              className="px-3 py-2 rounded-lg border border-white/15 text-sm hover:bg-white/5 transition-colors"
+              className="flex-1 min-w-[90px] text-center px-3 py-2 rounded-lg border border-white/15 text-sm hover:bg-white/5 transition-colors"
             >
               Maps ↗
             </a>
           )}
           <button
             onClick={() => setExpanded((v) => !v)}
-            className={`px-3 py-2 rounded-lg border text-sm transition-colors ${
+            className={`flex-1 min-w-[90px] px-3 py-2 rounded-lg border text-sm transition-colors ${
               expanded ? "bg-white/10 border-white/30 text-white" : "border-white/15 hover:bg-white/5"
             }`}
           >
             {expanded ? "Ascunde ▲" : "Detalii ▾"}
           </button>
-          <select
-            value={lead.status}
-            onChange={(e) => setStatus(e.target.value as LeadStatus)}
-            className="px-2 py-2 rounded-lg border border-white/15 bg-black/40 text-sm text-white/70 outline-none hover:bg-white/5"
-            title="Schimbă statusul"
-          >
-            {(["new", "contacted", "client", "skip"] as LeadStatus[]).map((s) => (
-              <option key={s} value={s} className="bg-zinc-900">{STATUS_LABELS[s]}</option>
-            ))}
-          </select>
         </div>
       </div>
 
@@ -1454,8 +1444,8 @@ function ContactStepper({
   const done = i >= leads.length;
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm grid place-items-center p-4" onClick={onClose}>
-      <div className="bg-zinc-950 border border-white/15 rounded-2xl w-full max-w-lg p-6" onClick={(e) => e.stopPropagation()}>
+    <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-end justify-center sm:items-center sm:p-4" onClick={onClose}>
+      <div className="bg-zinc-950 border border-white/15 rounded-t-2xl sm:rounded-2xl w-full sm:max-w-lg max-h-[92vh] overflow-y-auto p-6" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-4">
           <h3 className="font-semibold">Mod contactare</h3>
           <button onClick={onClose} className="text-white/40 hover:text-white text-sm">✕ Închide</button>
@@ -1469,7 +1459,14 @@ function ContactStepper({
           </div>
         ) : (
           <>
-            <p className="text-xs text-white/35 mb-3">{i + 1} din {leads.length}</p>
+            <div className="flex items-center justify-between mb-3">
+              <p className="text-xs text-white/35">{i + 1} din {leads.length}</p>
+              {i > 0 && (
+                <button onClick={back} className="text-xs text-white/40 hover:text-white/70" title="Înapoi la cel anterior">
+                  ← Înapoi
+                </button>
+              )}
+            </div>
             <div className="bg-white/[0.03] border border-white/10 rounded-xl p-4 mb-4">
               <div className="flex items-center gap-2 flex-wrap mb-1">
                 <h4 className="font-semibold text-lg">{lead.name}</h4>
@@ -1489,32 +1486,31 @@ function ContactStepper({
               <PitchTypeSelect group={group} value={pitchType} onChange={changePitchType} />
             </div>
             <p className="text-xs text-white/35 mb-1">Mesaj care se va trimite:</p>
-            <p className="text-sm text-white/60 bg-black/30 border border-white/10 rounded-lg p-3 mb-4 whitespace-pre-line">
+            <p className="text-sm text-white/60 bg-black/30 border border-white/10 rounded-lg p-3 mb-4 whitespace-pre-line max-h-28 overflow-y-auto">
               {fillTemplate(template, { name: lead.name, pitchType }, actor, group)}
             </p>
 
-            <div className="flex gap-2 flex-wrap">
-              {lead.whatsapp ? (
-                <button onClick={whatsapp} className="flex-1 px-4 py-3 rounded-lg bg-emerald-500 text-black font-semibold hover:bg-emerald-400">
-                  WhatsApp
+            <div className="flex flex-col gap-2">
+              <div className="flex gap-2">
+                {lead.whatsapp ? (
+                  <button onClick={whatsapp} className="flex-1 px-4 py-3.5 rounded-lg bg-emerald-500 text-black font-semibold hover:bg-emerald-400">
+                    WhatsApp
+                  </button>
+                ) : (
+                  <span className="flex-1 px-4 py-3.5 rounded-lg bg-white/5 text-white/30 text-center text-sm">fără număr</span>
+                )}
+                <button onClick={markSent} className="flex-1 px-4 py-3.5 rounded-lg bg-sky-500 text-black font-semibold hover:bg-sky-400" title="Confirmă că ai trimis mesajul și treci la următorul">
+                  ✓ Am trimis
                 </button>
-              ) : (
-                <span className="flex-1 px-4 py-3 rounded-lg bg-white/5 text-white/30 text-center text-sm">fără număr</span>
-              )}
-              <button onClick={markSent} className="px-4 py-3 rounded-lg border border-emerald-500/40 text-emerald-300 text-sm font-medium hover:bg-emerald-500/10" title="Confirmă că ai trimis mesajul și treci la următorul">
-                ✓ Am trimis →
-              </button>
-              <button onClick={() => { patch({ status: "skip" }); next(); }} className="px-4 py-3 rounded-lg border border-white/15 text-sm hover:bg-white/5" title="Ignoră">
-                Ignoră
-              </button>
-              <button onClick={next} className="px-4 py-3 rounded-lg border border-white/15 text-sm hover:bg-white/5" title="Sari peste, fără schimbări">
-                Sari →
-              </button>
-              {i > 0 && (
-                <button onClick={back} className="px-4 py-3 rounded-lg border border-white/15 text-sm text-white/50 hover:bg-white/5" title="Înapoi la cel anterior">
-                  ← Înapoi
+              </div>
+              <div className="flex gap-2">
+                <button onClick={() => { patch({ status: "skip" }); next(); }} className="flex-1 px-3 py-3 rounded-lg border border-white/10 text-sm text-white/40 hover:text-white/70 hover:bg-white/5 transition-colors" title="Ignoră">
+                  Ignoră
                 </button>
-              )}
+                <button onClick={next} className="flex-1 px-3 py-3 rounded-lg border border-white/10 text-sm text-white/40 hover:text-white/70 hover:bg-white/5 transition-colors" title="Sari peste, fără schimbări">
+                  Sari →
+                </button>
+              </div>
             </div>
           </>
         )}
