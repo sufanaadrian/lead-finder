@@ -55,7 +55,13 @@ function sortLeads<T extends { phone: string; rating: number; reviewCount: numbe
       });
     case "score":
     default:
-      return arr.sort((a, b) => scoreLead(b) - scoreLead(a));
+      return arr.sort((a, b) => {
+        const score = scoreLead(b) - scoreLead(a);
+        if (score !== 0) return score;
+        const saved = (b.savedAt || "").localeCompare(a.savedAt || "");
+        if (saved !== 0) return saved;
+        return a.name.localeCompare(b.name, "ro");
+      });
   }
 }
 
@@ -77,7 +83,8 @@ function computeCoverage(leads: { lat?: number; lng?: number }[], searches: Sear
 function openWhatsAppApp(phone: string, message: string) {
   const a = document.createElement("a");
   a.href = `whatsapp://send?phone=${phone}&text=${encodeURIComponent(message)}`;
-  a.rel = "noopener";
+  a.target = "_blank";
+  a.rel = "noopener noreferrer";
   document.body.appendChild(a);
   a.click();
   a.remove();
@@ -782,12 +789,32 @@ function SavedTab({
     if (!client) return;
     const channel = client
       .channel("leads-changes")
-      .on("postgres_changes", { event: "*", schema: "public", table: "leads" }, () => load())
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "leads" }, (payload: any) => {
+        const newRow = payload?.new;
+        const oldRow = payload?.old;
+        const eventType = payload?.eventType || payload?.type;
+
+        const isOwnClaimUpdate =
+          eventType === "UPDATE" &&
+          newRow?.claimed_by === actor &&
+          oldRow?.claimed_by !== newRow?.claimed_by &&
+          newRow?.claimed_at &&
+          oldRow?.claimed_at !== newRow?.claimed_at &&
+          newRow?.status === oldRow?.status &&
+          newRow?.interested === oldRow?.interested &&
+          newRow?.note === oldRow?.note &&
+          newRow?.pitch_type === oldRow?.pitch_type &&
+          newRow?.assigned_to === oldRow?.assigned_to;
+
+        if (!isOwnClaimUpdate) {
+          load();
+        }
+      })
       .subscribe();
     return () => {
       client.removeChannel(channel);
     };
-  }, [load]);
+  }, [load, actor]);
 
   // Forces a re-render every 30s so claim banners' "acum X minute" stays
   // roughly accurate even when nobody's triggered a Realtime refetch.
@@ -1394,9 +1421,19 @@ function ContactStepper({
   group: Group;
   onClose: () => void;
 }) {
-  const [i, setI] = useState(0);
-  const lead = leads[i];
+  const [selectedLeadId, setSelectedLeadId] = useState<string | null>(leads[0]?.id ?? null);
+  const currentIndex = selectedLeadId ? leads.findIndex((l) => l.id === selectedLeadId) : -1;
+  const index = currentIndex >= 0 ? currentIndex : 0;
+  const lead = selectedLeadId === null ? undefined : leads[index];
   const [pitchType, setPitchType] = useState<string>(lead?.pitchType ?? GROUP_DEFAULT_PITCH[group]);
+
+  useEffect(() => {
+    if (selectedLeadId !== null && currentIndex === -1 && leads.length > 0) {
+      setSelectedLeadId(leads[0].id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [leads, selectedLeadId, currentIndex]);
+
   // Reset the picker to this lead's own saved type whenever we move to a new one.
   useEffect(() => {
     setPitchType(lead?.pitchType ?? GROUP_DEFAULT_PITCH[group]);
@@ -1420,11 +1457,17 @@ function ContactStepper({
   }
 
   function next() {
-    setI((v) => v + 1);
+    if (index + 1 >= leads.length) {
+      setSelectedLeadId(null);
+    } else {
+      setSelectedLeadId(leads[index + 1].id);
+    }
   }
 
   function back() {
-    setI((v) => Math.max(0, v - 1));
+    if (index > 0) {
+      setSelectedLeadId(leads[index - 1].id);
+    }
   }
 
   // Opening WhatsApp doesn't mean the message was actually sent, so it no
@@ -1441,7 +1484,24 @@ function ContactStepper({
     next();
   }
 
-  const done = i >= leads.length;
+  const done = selectedLeadId === null || leads.length === 0;
+  if (done || !lead) {
+    return (
+      <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-end justify-center sm:items-center sm:p-4" onClick={onClose}>
+        <div className="bg-zinc-950 border border-white/15 rounded-t-2xl sm:rounded-2xl w-full sm:max-w-lg max-h-[92vh] overflow-y-auto p-6" onClick={(e) => e.stopPropagation()}>
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="font-semibold">Mod contactare</h3>
+            <button onClick={onClose} className="text-white/40 hover:text-white text-sm">✕ Închide</button>
+          </div>
+          <div className="text-center py-10">
+            <p className="text-2xl mb-2">✅</p>
+            <p className="text-white/70">Gata! Ai trecut prin toate cele {leads.length}.</p>
+            <button onClick={onClose} className="mt-5 px-5 py-2 rounded-lg bg-emerald-500 text-black font-medium hover:bg-emerald-400">Înapoi la listă</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-end justify-center sm:items-center sm:p-4" onClick={onClose}>
@@ -1451,17 +1511,10 @@ function ContactStepper({
           <button onClick={onClose} className="text-white/40 hover:text-white text-sm">✕ Închide</button>
         </div>
 
-        {done ? (
-          <div className="text-center py-10">
-            <p className="text-2xl mb-2">✅</p>
-            <p className="text-white/70">Gata! Ai trecut prin toate cele {leads.length}.</p>
-            <button onClick={onClose} className="mt-5 px-5 py-2 rounded-lg bg-emerald-500 text-black font-medium hover:bg-emerald-400">Înapoi la listă</button>
-          </div>
-        ) : (
           <>
             <div className="flex items-center justify-between mb-3">
-              <p className="text-xs text-white/35">{i + 1} din {leads.length}</p>
-              {i > 0 && (
+              <p className="text-xs text-white/35">{index + 1} din {leads.length}</p>
+              {index > 0 && (
                 <button onClick={back} className="text-xs text-white/40 hover:text-white/70" title="Înapoi la cel anterior">
                   ← Înapoi
                 </button>
@@ -1513,7 +1566,6 @@ function ContactStepper({
               </div>
             </div>
           </>
-        )}
       </div>
     </div>
   );
